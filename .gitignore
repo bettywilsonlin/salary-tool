@@ -1,0 +1,9 @@
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# 環境變數（避免不小心提交密碼或 API key）
+.env
+.env.local
