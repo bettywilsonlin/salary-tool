@@ -20308,6 +20308,7 @@ var __async = (__this, __arguments, generator) => {
     <input type="file" id="unified-file-input" accept=".xlsx,.xls" multiple style="display:none;" onchange="handleUnifiedUpload(this.files)">
   </div>
   <div id="unified-upload-status"></div>
+  <div id="memory-list" style="width:100%;margin-top:8px;"></div>
 </div>
 
 <div class="tabs">
@@ -21079,6 +21080,19 @@ document.addEventListener('DOMContentLoaded', () => {
     handleScheduleInput(e.dataTransfer.files);
   });
 
+  // 自動還原 IndexedDB 中已記憶的檔案
+  (async () => {
+    // 先無條件 render 一次：即使後續還原流程出錯，使用者也能看到已記憶的檔案清單
+    await renderMemoryList();
+    try {
+      const saved = await dbGetAllAsFiles();
+      if (saved.length > 0) {
+        await handleUnifiedUpload(saved, { skipPersist: true });
+      }
+    } catch(e) {
+      console.warn('還原已記憶檔案失敗：', e);
+    }
+  })();
 });
 
 // ==================== 車馬費計算器 ====================
@@ -22285,9 +22299,186 @@ function schRenderTrend(monthKeys) {
 }
 
 
+// ==================== 已記憶檔案（IndexedDB） ====================
+// 為什麼用 IndexedDB：xlsx 檔可能超過 localStorage 5MB 上限；IndexedDB 是瀏覽器內建，不需任何套件。
+// 設計：以檔名為 key，同檔名再上傳會自動覆蓋，無版本歷史。
+
+const MEM_DB_NAME = 'salary-tool';
+const MEM_STORE = 'files';
+
+function dbOpen() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(MEM_DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      req.result.createObjectStore(MEM_STORE, { keyPath: 'name' });
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function dbSaveFile(file, category) {
+  // category: 'schedule'（值班表） | 'commission'（提成表）；未指定則為 undefined
+  const db = await dbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(MEM_STORE, 'readwrite');
+    tx.objectStore(MEM_STORE).put({
+      name: file.name,
+      blob: file,
+      size: file.size,
+      savedAt: Date.now(),
+      category: category || null,
+    });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function dbListFiles() {
+  const db = await dbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(MEM_STORE, 'readonly');
+    const req = tx.objectStore(MEM_STORE).getAll();
+    req.onsuccess = () => {
+      const list = req.result.map(r => ({ name: r.name, size: r.size, savedAt: r.savedAt, category: r.category || null }));
+      list.sort((a, b) => a.name.localeCompare(b.name));
+      resolve(list);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function dbDeleteFile(name) {
+  const db = await dbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(MEM_STORE, 'readwrite');
+    tx.objectStore(MEM_STORE).delete(name);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function dbGetAllAsFiles() {
+  // 把儲存的 Blob 還原成 File[]，能直接餵給 handleUnifiedUpload
+  const db = await dbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(MEM_STORE, 'readonly');
+    const req = tx.objectStore(MEM_STORE).getAll();
+    req.onsuccess = () => {
+      const files = req.result.map(r => new File([r.blob], r.name, { type: r.blob.type }));
+      resolve(files);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function renderMemoryList() {
+  const el = document.getElementById('memory-list');
+  if (!el) return;
+  let list;
+  try { list = await dbListFiles(); }
+  catch(e) { while (el.firstChild) el.removeChild(el.firstChild); return; }
+
+  // 用 DOM API 建立，不用 innerHTML，避免檔名含特殊字元造成 XSS
+  while (el.firstChild) el.removeChild(el.firstChild);
+  if (list.length === 0) return;
+
+  const fmtDate = ts => {
+    const d = new Date(ts);
+    return `${d.getMonth()+1}/${d.getDate()}`;
+  };
+  const fmtSize = n => n < 1024*1024 ? `${(n/1024).toFixed(0)} KB` : `${(n/1024/1024).toFixed(1)} MB`;
+
+  // 分類定義：標題、外框/底色、邊框
+  const groups = {
+    schedule:   { title: '📅 值班表',  bg: '#eff6ff', border: '#bfdbfe' },
+    commission: { title: '📊 提成表',  bg: '#f0fdf4', border: '#bbf7d0' },
+    other:      { title: '📂 其他',    bg: '#f1f5f9', border: '#cbd5e1' },
+  };
+  const buckets = { schedule: [], commission: [], other: [] };
+  for (const f of list) {
+    const k = (f.category === 'schedule' || f.category === 'commission') ? f.category : 'other';
+    buckets[k].push(f);
+  }
+
+  const header = document.createElement('div');
+  header.style.cssText = 'font-size:12px;color:#374151;margin-bottom:6px;font-weight:600;display:flex;align-items:center;justify-content:space-between;gap:8px;';
+  const headerTitle = document.createElement('span');
+  headerTitle.textContent = `📁 已記憶 ${list.length} 個檔案（下次開啟自動載入）`;
+  header.appendChild(headerTitle);
+  const clearBtn = document.createElement('button');
+  clearBtn.textContent = '🗑 全部刪除';
+  clearBtn.title = '清除所有已記憶檔案';
+  clearBtn.style.cssText = 'border:1px solid #fca5a5;background:white;color:#dc2626;font-size:11px;padding:3px 10px;border-radius:8px;cursor:pointer;font-weight:600;';
+  clearBtn.addEventListener('click', deleteAllMemoryFiles);
+  header.appendChild(clearBtn);
+  el.appendChild(header);
+
+  for (const key of ['schedule', 'commission', 'other']) {
+    const items = buckets[key];
+    if (items.length === 0) continue;
+    const meta = groups[key];
+
+    const section = document.createElement('div');
+    section.style.cssText = `margin-bottom:6px;padding:6px 10px;background:${meta.bg};border:1px solid ${meta.border};border-radius:8px;`;
+
+    const subHeader = document.createElement('div');
+    subHeader.style.cssText = 'font-size:11px;color:#475569;margin-bottom:4px;font-weight:600;';
+    subHeader.textContent = `${meta.title}（${items.length}）`;
+    section.appendChild(subHeader);
+
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;';
+    for (const f of items) {
+      const chip = document.createElement('span');
+      chip.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:4px 10px;background:white;border:1px solid #e2e8f0;border-radius:12px;font-size:12px;';
+      const label = document.createElement('span');
+      label.textContent = f.name;
+      label.title = `${fmtSize(f.size)}・${fmtDate(f.savedAt)} 上傳`;
+      const btn = document.createElement('button');
+      btn.textContent = '🗑';
+      btn.title = '刪除';
+      btn.style.cssText = 'border:none;background:transparent;cursor:pointer;color:#dc2626;font-size:14px;padding:0;line-height:1;';
+      btn.addEventListener('click', () => deleteMemoryFile(f.name));
+      chip.appendChild(label);
+      chip.appendChild(btn);
+      wrap.appendChild(chip);
+    }
+    section.appendChild(wrap);
+    el.appendChild(section);
+  }
+}
+
+async function deleteMemoryFile(name) {
+  if (!confirm(`確定要從記憶中刪除「${name}」？\n（不影響本機原始檔案）`)) return;
+  await dbDeleteFile(name);
+  await renderMemoryList();
+}
+
+async function dbClearAll() {
+  // 一次清空整個 store，比逐筆刪除快、不會有殘留
+  const db = await dbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(MEM_STORE, 'readwrite');
+    tx.objectStore(MEM_STORE).clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function deleteAllMemoryFiles() {
+  const list = await dbListFiles();
+  if (list.length === 0) return;
+  if (!confirm(`確定要清除所有 ${list.length} 個已記憶檔案？\n（不影響本機原始檔案，但下次開啟需重新上傳）`)) return;
+  await dbClearAll();
+  await renderMemoryList();
+}
+
 // ==================== 統一上傳 ====================
 
-async function handleUnifiedUpload(files) {
+async function handleUnifiedUpload(files, opts = {}) {
+  // skipPersist=true：從 IndexedDB 還原時用，避免重複寫入並刷新 savedAt
+  const skipPersist = opts.skipPersist === true;
   const statusEl = document.getElementById('unified-upload-status');
   statusEl.innerHTML = '<span style="color:#6b7280;">⏳ 解析中…</span>';
 
@@ -22300,6 +22491,8 @@ async function handleUnifiedUpload(files) {
     try { wb = XLSX.read(new Uint8Array(buf), { type: 'array' }); }
     catch(e) { skipped.push(file.name); continue; }
 
+    let recognized = false;
+    let category = null;
     if (wb.SheetNames.includes('VS')) {
       // 值班表
       const ws = wb.Sheets['VS'];
@@ -22308,6 +22501,8 @@ async function handleUnifiedUpload(files) {
       schMonthLabels[monthKey] = mM ? `${parseInt(mM[1])}年${parseInt(mM[2])}月` : file.name.replace(/\.xlsx?$/i, '');
       schRawSheets[monthKey] = { ws, filename: file.name };
       schedLoaded.push(monthKey);
+      recognized = true;
+      category = 'schedule';
     } else {
       // 嘗試解析為提成 h 檔
       const ws0 = wb.Sheets[wb.SheetNames[0]];
@@ -22321,9 +22516,17 @@ async function handleUnifiedUpload(files) {
       if (Object.keys(parsed).length > 0) {
         mergeIntoMonthlyData(parsed);
         commLoaded.push(...Object.keys(parsed));
+        recognized = true;
+        category = 'commission';
       } else {
         skipped.push(file.name);
       }
+    }
+
+    // 識別成功才存入 IndexedDB（同檔名覆蓋）；無法識別的跳過、不污染記憶
+    if (recognized && !skipPersist) {
+      try { await dbSaveFile(file, category); }
+      catch(e) { console.warn('IndexedDB 儲存失敗：', file.name, e); }
     }
   }
 
@@ -22353,6 +22556,9 @@ async function handleUnifiedUpload(files) {
     : '<span style="color:#dc2626;">❌ 沒有可識別的檔案</span>';
 
   document.getElementById('unified-file-input').value = '';
+
+  // 重新整理已記憶清單（新增 / 還原皆刷新）
+  renderMemoryList();
 }
 
 // ==================== Tab 切換 ====================
@@ -22438,13 +22644,12 @@ const OT_RULES = {
   'OE':   { slots: [[1400,1600]], nextSlots: [[100,300]],  sameDay: 2, nextDay: 2 },
   '○E':   { slots: [[1400,1600]], nextSlots: [[100,300]],  sameDay: 2, nextDay: 2 },
   'E*':   { slots: [[1400,1600]], nextSlots: [[100,300]],  sameDay: 2, nextDay: 2 },
-  '◇E':  { slots: [[1400,1600]], nextSlots: [[100,300]],  sameDay: 2, nextDay: 2 },
+  "◇e'":  { slots: [[1400,1600]], nextSlots: [[100,300]],  sameDay: 2, nextDay: 2 },
   'E#':   { slots: [[1400,1600]], nextSlots: [[100,300]],  sameDay: 2, nextDay: 2 },
   '佳E':  { slots: [[1400,1600]], nextSlots: [[100,300]],  sameDay: 2, nextDay: 2 },
   '!E':   { slots: [[1400,1600]], nextSlots: [[100,300]],  sameDay: 2, nextDay: 2 },
   '柳E':  { slots: [[1345,1545]], nextSlots: [[30,230]],   sameDay: 2, nextDay: 2 },
   '△E':  { slots: [[1500,1600]], nextSlots: [[100,300]],  sameDay: 1, nextDay: 2 },
-  "◇e'":  { slots: [[1500,1600]], nextSlots: [[0,200]],    sameDay: 1, nextDay: 2 },
   '柳C':  { slots: [[900,1000],[2300,2400]], nextSlots: [[0,100]],   sameDay: 2, nextDay: 1 },
   '佳C':  { slots: [[900,1000],[2300,2400]], nextSlots: [[0,100]],   sameDay: 2, nextDay: 1 },
   'C':    { slots: [[900,1000],[2300,2400]], nextSlots: [[0,100]],   sameDay: 2, nextDay: 1 },
@@ -22459,6 +22664,7 @@ const OT_RULES = {
   '柳B':  { slots: [[1900,2000]], nextSlots: [[900,1100]], sameDay: 1, nextDay: 2 },
   "柳b'": { slots: [[1900,2000]], nextSlots: [[900,1100]], sameDay: 1, nextDay: 2 },
   '佳B':  { slots: [[1800,2000]], nextSlots: [[900,1100]], sameDay: 2, nextDay: 2 },
+  "佳b'": { slots: [[1800,2000]], nextSlots: [[900,1100]], sameDay: 2, nextDay: 2 },
   'N':    { slots: [[2200,2300]], nextSlots: [[900,1100]], sameDay: 1, nextDay: 2 },
   'ON':   { slots: [[2100,2300]], nextSlots: [[900,1100]], sameDay: 2, nextDay: 2 },
   '○N':  { slots: [[2100,2300]], nextSlots: [[900,1100]], sameDay: 2, nextDay: 2 },
