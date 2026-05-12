@@ -138,6 +138,7 @@
   .sch-area-total { background:#dbeafe; color:#1d4ed8; }
   .sch-area-liu   { background:#d1fae5; color:#065f46; }
   .sch-area-jia   { background:#ede9fe; color:#6d28d9; }
+  .sch-area-xian  { background:#fef3c7; color:#92400e; }
   .upload-tag { display: inline-block; padding: 3px 10px; border-radius: 12px; background: #dcfce7; color: #15803d; font-size: 12px; font-weight: 600; margin: 3px; }
   .upload-tag.warn { background: #fef9c3; color: #854d0e; }
   .chart-bar-wrap { margin-top: 8px; }
@@ -20870,10 +20871,41 @@ const SHIFT_FEES = {
   '佳B':  { area:'佳里', wd:17600, hd:20500 },
   "佳b'": { area:'佳里', wd:17600, hd:20500 },
   '○B':  { area:'總院', wd:null,  hd:20534 },
+
+  // === 別名/變體補登（2026-05 使用者確認） ===
+  // △D 算 d'（10小時班）
+  '△D':  { area:'總院', wd:9600,  hd:14200 },
+  // △E 算 E
+  '△E':  { area:'總院', wd:11000, hd:13600 },
+  // O 系列：跟基礎班同價
+  'OD':  { area:'總院', wd:11000, hd:15800 },  // = D
+  'OE':  { area:'總院', wd:11000, hd:13600 },  // = E
+  'ON':  { area:'總院', wd:14000, hd:16000 },  // = N
+  'OA':  { area:'總院', wd:null,  hd:18916 },  // = A（過年特別班）
+  'OB':  { area:'總院', wd:null,  hd:20534 },  // = B（過年特別班）
+  // * 系列：跟基礎班同價
+  'A*':  { area:'總院', wd:null,  hd:18916 },  // = A
+  "a'*": { area:'總院', wd:null,  hd:18916 },  // = a'
+  'B*':  { area:'總院', wd:null,  hd:20534 },  // = B
+  // ◇ / ! / d% 系列：使用者確認「d」指 d'（10小時班）
+  '◇D':  { area:'總院', wd:9600,  hd:14200 },  // = d'
+  "◇d'": { area:'總院', wd:9600,  hd:14200 },  // = D# = d'
+  '!D':  { area:'總院', wd:9600,  hd:14200 },  // = d'
+  'd%':  { area:'總院', wd:9600,  hd:14200 },  // = d'
+
+  // === 過年特殊班：車馬費金額待使用者確認（目前未列入計算，會觸發「未知班別」警告） ===
+  // 'K':   過年特殊班（總院），金額未知
+  // '柳K': 過年特殊班（柳營），金額未知
+  // '佳K': 過年特殊班（佳里），金額未知
+  // '佳C': 過年特殊班（佳里），金額未知
+
+  // === 香林（2026-05 使用者新增） ===
+  '香林': { area:'香林', wd:35000, hd:35000 },
 };
 
 // 不計車馬費（請假、進修、行政等）的班別代碼關鍵字
-const NO_FEE_KEYWORDS = ['課', '香林', '師', '出', '假', '補休', '進修', '教學', '會'];
+// 註：香林班已改為有車馬費（35000），不再列入此清單
+const NO_FEE_KEYWORDS = ['課', '師', '出', '假', '補休', '進修', '教學', '會'];
 function isNoFeeCode(code) {
   return NO_FEE_KEYWORDS.some(k => code.includes(k));
 }
@@ -21951,14 +21983,14 @@ function schParseMonth(ws, doctorId) {
 
     if (!shiftRaw) { debugLog.push({ date:dateVal, raw:'(空白)', norm:'', found:null }); continue; }
 
-    // 純漢字 2 字以上 → 姓名，跳過
-    if (/^[\u4e00-\u9fff\s]+$/.test(shiftRaw) && shiftRaw.replace(/\s/g,'').length >= 2) {
-      debugLog.push({ date:dateVal, raw:shiftRaw, norm:'', found:'name' }); continue;
-    }
-
     const shift = schNormShift(shiftRaw);
     const fi = SHIFT_FEES[shift] || SHIFT_FEES[shift.replace(/\s+/g,'')];
     const foundShift = fi ? (SHIFT_FEES[shift] ? shift : shift.replace(/\s+/g,'')) : null;
+
+    // 查不到、且看起來像中文姓名（純漢字 2 字以上）→ 視為醫師姓名跳過
+    if (!fi && /^[一-鿿\s]+$/.test(shiftRaw) && shiftRaw.replace(/\s/g,'').length >= 2) {
+      debugLog.push({ date:dateVal, raw:shiftRaw, norm:shift, found:'name' }); continue;
+    }
 
     if (fi) {
       debugLog.push({ date:dateVal, raw:shiftRaw, norm:shift, found:'✓' });
@@ -21973,6 +22005,91 @@ function schParseMonth(ws, doctorId) {
   return { shifts, unknown, debugLog };
 }
 
+// === 香林段組計費規則 ===
+// 連續日的香林班視為「同一段」，整段一律 35000 元，最長 3 天為一段。
+// 跨月延續：若上個月最後一天是香林且該段未滿 3 天，本月日 1 起算入該段。
+//   例：5/30、5/31、6/1 三天連續 → 整段歸 5/30 收 35000；6/1 顯示「同段」$0。
+//   例：5/28、5/29、5/30、5/31 連續 → 5/28+5/29+5/30 為第 1 段（已滿 3 天），
+//       5/31 為第 2 段第 1 天（未滿，可延續到 6/1）。
+// 已知限制：跨月延續使用上個月的「原始解析」結果，不考慮上個月的覆寫/手動新增。
+const XIAN_FEE = 35000;
+const XIAN_MAX_DAYS = 3;
+
+function isXianShift(s) {
+  return schNormShift(s.shift || '') === '香林' || s.area === '香林';
+}
+
+function getMonthLastDay(monthKey) {
+  // monthKey 格式：民國年3碼 + 月2碼，如 "11503"
+  if (!/^\d{5}$/.test(monthKey)) return 31;
+  const yy = parseInt(monthKey.slice(0,3));
+  const mm = parseInt(monthKey.slice(3,5));
+  return new Date(yy + 1911, mm, 0).getDate();
+}
+
+function prevMonthKey(monthKey) {
+  if (!/^\d{5}$/.test(monthKey)) return null;
+  const yy = parseInt(monthKey.slice(0,3));
+  const mm = parseInt(monthKey.slice(3,5));
+  if (mm === 1) return `${String(yy-1).padStart(3,'0')}12`;
+  return `${monthKey.slice(0,3)}${String(mm-1).padStart(2,'0')}`;
+}
+
+function buildXianSegments(xianDatesAsc) {
+  // 輸入：某月內所有香林日期（升序）。輸出：分段陣列 [[d1,d2,d3], [d5], ...]
+  if (!xianDatesAsc.length) return [];
+  const segs = [[xianDatesAsc[0]]];
+  for (let i = 1; i < xianDatesAsc.length; i++) {
+    const d = xianDatesAsc[i];
+    const cur = segs[segs.length-1];
+    if (d === cur[cur.length-1] + 1 && cur.length < XIAN_MAX_DAYS) cur.push(d);
+    else segs.push([d]);
+  }
+  return segs;
+}
+
+function getXianCarryoverLength(prevKey) {
+  // 回傳上個月「未滿且結束在月底」的香林段長度（0~2）；否則 0。
+  if (!prevKey || !schRawSheets[prevKey]) return 0;
+  const { ws } = schRawSheets[prevKey];
+  const { shifts } = schParseMonth(ws, schSelectedId);
+  const xianDates = [...new Set(shifts.filter(isXianShift).map(s => s.date))].sort((a,b) => a-b);
+  if (!xianDates.length) return 0;
+  const lastDay = getMonthLastDay(prevKey);
+  if (xianDates[xianDates.length-1] !== lastDay) return 0;  // 月底不是香林 → 無延續
+  const segs = buildXianSegments(xianDates);
+  const lastSeg = segs[segs.length-1];
+  if (lastSeg[lastSeg.length-1] !== lastDay) return 0;
+  return lastSeg.length < XIAN_MAX_DAYS ? lastSeg.length : 0;
+}
+
+function applyXianGrouping(shifts, monthKey) {
+  // shifts 已依日期排序。原地修改 fee 與 xianGrouped 標記。
+  const hasDay1Xian = shifts.some(s => s.date === 1 && isXianShift(s));
+  const carryover = hasDay1Xian ? getXianCarryoverLength(prevMonthKey(monthKey)) : 0;
+
+  let runLength = carryover;
+  let prevXianDate = carryover > 0 ? 0 : -10;  // 哨兵：carryover 視為「上月最後一天」
+  for (const s of shifts) {
+    if (!isXianShift(s)) {
+      runLength = 0;
+      prevXianDate = -10;
+      continue;
+    }
+    const continuous = (s.date === prevXianDate + 1);
+    if (continuous && runLength < XIAN_MAX_DAYS) {
+      s.fee = 0;
+      s.xianGrouped = true;
+    } else {
+      s.fee = XIAN_FEE;
+      s.xianGrouped = false;
+      runLength = 0;
+    }
+    runLength++;
+    prevXianDate = s.date;
+  }
+}
+
 function schGetMonthData(monthKey) {
   const { ws } = schRawSheets[monthKey];
   const { shifts: raw, unknown, debugLog } = schParseMonth(ws, schSelectedId);
@@ -21984,7 +22101,7 @@ function schGetMonthData(monthKey) {
     const ov = overrides[s.date];
     if (ov === '') continue;          // 刪除這筆
     if (ov != null) {                 // 替換班別
-      const fi = SHIFT_FEES[ov];
+      const fi = SHIFT_FEES[schNormShift(ov)];
       final.push({ ...s, shift:ov, area:fi?.area||s.area,
         fee: fi ? (s.isHoliday?fi.hd:fi.wd)||0 : 0,
         isOverride:true, origShift:s.shift, addIdx:null });
@@ -21994,6 +22111,7 @@ function schGetMonthData(monthKey) {
   }
   adds.forEach((a, idx) => final.push({ ...a, isManual:true, isOverride:false, addIdx:idx }));
   final.sort((a,b) => a.date - b.date);
+  applyXianGrouping(final, monthKey);  // 套用香林段組計費
   return { shifts: final, unknown, debugLog };
 }
 
@@ -22014,7 +22132,7 @@ function schRenderMonthTabs(monthKeys) {
 }
 
 function schAreaChip(a) {
-  const cls = a==='總院'?'sch-area-total':a==='柳營'?'sch-area-liu':'sch-area-jia';
+  const cls = a==='總院'?'sch-area-total':a==='柳營'?'sch-area-liu':a==='佳里'?'sch-area-jia':'sch-area-xian';
   return `<span class="sch-area-chip ${cls}">${a}</span>`;
 }
 
@@ -22040,7 +22158,12 @@ function schRenderSummary(shifts) {
   let html = `<div style="font-size:32px;font-weight:800;color:var(--primary);margin-bottom:4px;">$${total.toLocaleString()}</div>
     <div style="font-size:13px;color:var(--gray-600);margin-bottom:16px;">共 ${shifts.length} 班</div>
     <div style="display:flex;gap:12px;flex-wrap:wrap;">`;
-  for (const [area, amt] of Object.entries(byArea))
+  // 排序：總院 → 柳營 → 佳里 → 香林（香林永遠在最後）
+  const AREA_ORDER = { '總院':0, '柳營':1, '佳里':2, '香林':3 };
+  const sortedAreas = Object.entries(byArea).sort(
+    ([a],[b]) => (AREA_ORDER[a] ?? 99) - (AREA_ORDER[b] ?? 99)
+  );
+  for (const [area, amt] of sortedAreas)
     html += `<div style="background:var(--gray-50);border-radius:8px;padding:10px 16px;">
       ${schAreaChip(area)}<div style="font-size:18px;font-weight:700;color:var(--gray-900);margin-top:4px;">$${amt.toLocaleString()}</div></div>`;
   document.getElementById('sch-summary').innerHTML = html + '</div>';
@@ -22067,7 +22190,9 @@ function schRenderTable(monthKey, shifts) {
 
   for (const r of shifts) {
     const badge = r.isHoliday ? '<span class="hd-badge">假日</span>' : '<span class="wd-badge">平日</span>';
-    const feeStr = r.fee != null ? `$${r.fee.toLocaleString()}` : '—';
+    const feeStr = r.xianGrouped
+      ? `<span style="color:#92400e;">$0</span> <span style="font-size:10px;background:#fef3c7;color:#92400e;padding:1px 5px;border-radius:3px;">同段</span>`
+      : (r.fee != null ? `$${r.fee.toLocaleString()}` : '—');
     total += r.fee||0;
     const rowBg = r.isManual?'background:#fffbeb;':r.isOverride?'background:#f0fdf4;':'';
     const tag = r.isManual
@@ -22151,7 +22276,7 @@ function schCancelEdit(date) {
 function schPreviewEditFee(date, shift, isHoliday) {
   const el = document.getElementById(`sch-ef-${date}`);
   if (!el) return;
-  const fi = SHIFT_FEES[shift.trim()];
+  const fi = SHIFT_FEES[schNormShift(shift.trim())];
   el.textContent = fi ? `→ $${((isHoliday?fi.hd:fi.wd)||0).toLocaleString()}` : '（未知代碼）';
   el.style.color = fi ? '#065f46' : '#dc2626';
 }
@@ -22216,7 +22341,7 @@ function schToggleAddForm() {
   }
 }
 function schPreviewAddFee() {
-  const shift = document.getElementById('sch-add-shift').value.trim();
+  const shift = schNormShift(document.getElementById('sch-add-shift').value.trim());
   const isHd  = document.getElementById('sch-add-daytype').value === '1';
   const el    = document.getElementById('sch-add-fee-preview');
   const fi    = SHIFT_FEES[shift];
@@ -22225,7 +22350,7 @@ function schPreviewAddFee() {
 }
 function schConfirmAdd() {
   const date  = parseInt(document.getElementById('sch-add-date').value);
-  const shift = document.getElementById('sch-add-shift').value;
+  const shift = schNormShift(document.getElementById('sch-add-shift').value.trim());
   const isHd  = document.getElementById('sch-add-daytype').value === '1';
   if (!date || !shift) { alert('請填入日期和班別'); return; }
   const fi   = SHIFT_FEES[shift];
