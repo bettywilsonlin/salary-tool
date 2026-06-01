@@ -21093,23 +21093,8 @@ document.addEventListener('DOMContentLoaded', () => {
     handleUnifiedUpload(e.dataTransfer.files);
   });
 
-  const zone = document.getElementById('upload-zone');
-  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
-  zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
-  zone.addEventListener('drop', e => {
-    e.preventDefault();
-    zone.classList.remove('drag-over');
-    handleFileInput(e.dataTransfer.files);
-  });
-
-  const schZone = document.getElementById('sch-upload-zone');
-  schZone.addEventListener('dragover', e => { e.preventDefault(); schZone.classList.add('drag-over'); });
-  schZone.addEventListener('dragleave', () => schZone.classList.remove('drag-over'));
-  schZone.addEventListener('drop', e => {
-    e.preventDefault();
-    schZone.classList.remove('drag-over');
-    handleScheduleInput(e.dataTransfer.files);
-  });
+  // （原本還有 upload-zone / sch-upload-zone 兩段拖拉綁定，DOM 已合併為 unified-upload-zone，
+  //   舊綁定會 null deref 中斷整個 DOMContentLoaded，連帶癱瘓下方 IndexedDB 自動還原，已移除）
 
   // 自動還原 IndexedDB 中已記憶的檔案
   (async () => {
@@ -22891,7 +22876,15 @@ function otParseForDoctor(monthKey, doctorId) {
 
   const doc = (schDoctors || []).find(d => d.id === doctorId);
   if (!doc) return { rows: [], meta: { year, month } };
-  const { col: docCol, name } = doc;
+  const name = doc.name;
+  // 每月重新用人事號找欄位（同 schParseMonth）：不同月份位置可能不同，
+  // 不能用 schDoctors 載入時快取的 col，否則 5 月有人插隊往右挪一格就會抓到別人
+  let docCol = -1;
+  for (let c = range.s.c; c <= range.e.c; c++) {
+    const cell = ws[XLSX.utils.encode_cell({r:2, c})];
+    if (cell && String(cell.v).trim() === doctorId) { docCol = c; break; }
+  }
+  if (docCol < 0) return { rows: [], meta: { year, month, name } };
 
   const holidayDates = new Set();
   for (let r = 4; r <= range.e.r; r++) {
