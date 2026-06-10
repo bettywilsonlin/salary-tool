@@ -20523,10 +20523,11 @@ var __async = (__this, __arguments, generator) => {
       <!-- 每日班表（收合式） -->
       <div class="card" id="schedule-card">
         <div class="card-title collapsible-trigger" onclick="toggleCard(this)" style="cursor:pointer;user-select:none;margin-bottom:0;">
-          本月出勤記錄
+          <span id="schedule-card-title">本月出勤記錄</span>
           <span class="collapse-icon" style="margin-left:auto;font-size:14px;color:var(--gray-600);">▾</span>
         </div>
         <div class="collapsible-body" style="display:none;padding-top:14px;">
+          <div id="schedule-area-hint" style="font-size:13px;color:var(--gray-600);background:var(--gray-50);border-left:3px solid var(--primary);padding:8px 12px;border-radius:4px;margin-bottom:12px;display:none;"></div>
           <div id="schedule-grid"></div>
         </div>
       </div>
@@ -21241,6 +21242,29 @@ function renderReport() {
 function renderAreaDetail(month, area) {
   const data = MONTHLY_DATA[month][area];
   if (!data) return;
+
+  // 動態更新「本月出勤記錄」標題與摘要列：讓人看清楚目前顯示的是哪個院區
+  // 用 DOM API 而非 innerHTML 拼字串，避免 XSS（即使 area 字串來自使用者上傳的 Excel，也走安全路徑）
+  const titleEl = document.getElementById('schedule-card-title');
+  const hintEl  = document.getElementById('schedule-area-hint');
+  if (titleEl) titleEl.textContent = `本月出勤記錄（${area}院區）`;
+  if (hintEl) {
+    const allAreas = Object.keys(MONTHLY_DATA[month] || {});
+    if (allAreas.length > 1) {
+      hintEl.textContent = '';
+      const others = allAreas.filter(a => a !== area).join('、');
+      const prefix = document.createTextNode('📍 目前顯示：');
+      const current = document.createElement('b');
+      current.textContent = `${area}院區`;
+      const suffix = document.createTextNode(`　｜　其他院區（${others}）請點上方院區按鈕切換`);
+      hintEl.appendChild(prefix);
+      hintEl.appendChild(current);
+      hintEl.appendChild(suffix);
+      hintEl.style.display = 'block';
+    } else {
+      hintEl.style.display = 'none';
+    }
+  }
 
   // 明細表
   const tbody = document.getElementById('breakdown-body');
