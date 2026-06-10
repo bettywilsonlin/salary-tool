@@ -22870,12 +22870,15 @@ function otParseForDoctor(monthKey, doctorId) {
   const range = XLSX.utils.decode_range(ws['!ref']);
 
   const titleCell = ws[XLSX.utils.encode_cell({r:0, c:0})];
+  const titleStr  = titleCell ? String(titleCell.v||'') : '';
   let year = 0, month = 0;
-  const mT = titleCell ? String(titleCell.v||'').match(/(\d+)年.*?(\d+)月/) : null;
+  const mT = titleStr.match(/(\d+)年.*?(\d+)月/);
   if (mT) { year = parseInt(mT[1]); month = parseInt(mT[2]); }
+  // 偵測是否為奇美院區班表（用來決定 Word 加班單標題要不要用奇美官方格式）
+  const isChimei = titleStr.includes('奇美');
 
   const doc = (schDoctors || []).find(d => d.id === doctorId);
-  if (!doc) return { rows: [], meta: { year, month } };
+  if (!doc) return { rows: [], meta: { year, month, isChimei } };
   const name = doc.name;
   // 每月重新用人事號找欄位（同 schParseMonth）：不同月份位置可能不同，
   // 不能用 schDoctors 載入時快取的 col，否則 5 月有人插隊往右挪一格就會抓到別人
@@ -22884,7 +22887,7 @@ function otParseForDoctor(monthKey, doctorId) {
     const cell = ws[XLSX.utils.encode_cell({r:2, c})];
     if (cell && String(cell.v).trim() === doctorId) { docCol = c; break; }
   }
-  if (docCol < 0) return { rows: [], meta: { year, month, name } };
+  if (docCol < 0) return { rows: [], meta: { year, month, name, isChimei } };
 
   const holidayDates = new Set();
   for (let r = 4; r <= range.e.r; r++) {
@@ -22943,7 +22946,7 @@ function otParseForDoctor(monthKey, doctorId) {
     }
   }
 
-  return { rows, meta: { year, month, name, empId: doctorId, totalWeekday, totalHoliday }, unknownShifts, debugLog };
+  return { rows, meta: { year, month, name, empId: doctorId, totalWeekday, totalHoliday, isChimei }, unknownShifts, debugLog };
 }
 
 function otRecalcAndRender() {
@@ -23238,9 +23241,14 @@ async function otExportWord() {
     return new TextRun(r);
   }
 
+  // 標題依班表來源決定：奇美院區用官方表格名稱，其他來源用通用名稱
+  const docTitle = meta.isChimei
+    ? '奇美醫療財團法人奇美醫院主治醫師加班登記表'
+    : '主治醫師加班登記表';
+
   const children = [
     // 標題
-    mkp([tr('奇美醫療財團法人奇美醫院主治醫師加班登記表', { bold:true, sz:48 })],
+    mkp([tr(docTitle, { bold:true, sz:48 })],
         { after: 0, align: AlignmentType.CENTER, line: 560 }),
     // 加班年月
     mkp([
