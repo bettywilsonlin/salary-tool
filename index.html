@@ -20316,6 +20316,7 @@ var __async = (__this, __arguments, generator) => {
   <div class="tab active" onclick="switchTab('overtime')">📝 加班單產生器</div>
   <div class="tab" onclick="switchTab('schedule')">📅 用班表計算車馬費</div>
   <div class="tab" onclick="switchTab('report')">📊 提成月報</div>
+  <div class="tab" onclick="switchTab('total')">💰 總薪水試算</div>
   <div class="tab" onclick="switchTab('calc')">🚗 車馬費計算器</div>
 </div>
 
@@ -20532,6 +20533,61 @@ var __async = (__this, __arguments, generator) => {
         </div>
       </div>
 
+    </div>
+  </div>
+
+  <!-- ===== Tab: 總薪水試算 ===== -->
+  <div id="tab-total" class="panel">
+    <div id="total-me-banner" style="font-size:13px;color:var(--gray-600);margin-bottom:12px;"></div>
+
+    <div class="card" id="total-empty-state" style="display:none;">
+      <p id="total-empty-msg" style="color:var(--gray-600);padding:12px 0;"></p>
+    </div>
+
+    <div id="total-main" style="display:none;">
+      <div class="card">
+        <div class="card-title" style="display:flex;align-items:center;gap:12px;">
+          <span>單月試算</span>
+          <select id="total-sel-month" onchange="renderTotalSingleMonth(this.value)" style="font-size:14px;padding:6px 10px;border:1px solid var(--gray-200);border-radius:6px;">
+          </select>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:20px 0;">
+          <div style="background:var(--gray-50);border-radius:8px;padding:18px;text-align:center;">
+            <div style="font-size:13px;color:var(--gray-600);margin-bottom:6px;">車馬費</div>
+            <div id="total-ca-amt" style="font-size:24px;font-weight:700;color:var(--primary);">—</div>
+          </div>
+          <div style="background:var(--gray-50);border-radius:8px;padding:18px;text-align:center;">
+            <div style="font-size:13px;color:var(--gray-600);margin-bottom:6px;">提成</div>
+            <div id="total-comm-amt" style="font-size:24px;font-weight:700;color:var(--success);">—</div>
+          </div>
+          <div style="background:var(--primary-light);border-radius:8px;padding:18px;text-align:center;">
+            <div style="font-size:13px;color:var(--primary);margin-bottom:6px;font-weight:600;">總薪水</div>
+            <div id="total-sum-amt" style="font-size:28px;font-weight:800;color:var(--primary);">—</div>
+          </div>
+        </div>
+
+        <div class="card-title collapsible-trigger" onclick="toggleCard(this)" style="cursor:pointer;user-select:none;margin-bottom:0;font-size:14px;">
+          <span>車馬費明細</span>
+          <span class="collapse-icon" style="margin-left:auto;font-size:14px;color:var(--gray-600);">▸</span>
+        </div>
+        <div class="collapsible-body" style="display:none;padding-top:12px;">
+          <div id="total-ca-detail"></div>
+        </div>
+
+        <div class="card-title collapsible-trigger" onclick="toggleCard(this)" style="cursor:pointer;user-select:none;margin:14px 0 0;font-size:14px;">
+          <span>提成明細</span>
+          <span class="collapse-icon" style="margin-left:auto;font-size:14px;color:var(--gray-600);">▸</span>
+        </div>
+        <div class="collapsible-body" style="display:none;padding-top:12px;">
+          <div id="total-comm-detail"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">年度趨勢</div>
+        <div id="total-trend-chart"></div>
+      </div>
     </div>
   </div>
 
@@ -21055,6 +21111,9 @@ async function processFile(file) {
   const months = Object.keys(parsed);
   if (!months.length) return { file: file.name, ok: false, msg: '無法解析，請確認是正確的明細格式' };
   mergeIntoMonthlyData(parsed);
+  const detectedEmpId = detectMeFromCommission(file.name);
+  if (detectedEmpId) meDoctorId = detectedEmpId;
+  setTimeout(() => { if (typeof refreshTotalTab === 'function') refreshTotalTab(); }, 0);
   return { file: file.name, ok: true, months };
 }
 
@@ -22649,6 +22708,9 @@ async function handleUnifiedUpload(files, opts = {}) {
       if (Object.keys(parsed).length > 0) {
         mergeIntoMonthlyData(parsed);
         commLoaded.push(...Object.keys(parsed));
+        const detectedEmpId = detectMeFromCommission(file.name);
+        if (detectedEmpId) meDoctorId = detectedEmpId;
+        setTimeout(() => { if (typeof refreshTotalTab === 'function') refreshTotalTab(); }, 0);
         recognized = true;
         category = 'commission';
       } else {
@@ -22673,6 +22735,7 @@ async function handleUnifiedUpload(files, opts = {}) {
     }
     schShowDoctorSelector();
     otInit();
+    if (typeof refreshTotalTab === 'function') refreshTotalTab();
   }
 
   // 顯示結果
@@ -22694,6 +22757,348 @@ async function handleUnifiedUpload(files, opts = {}) {
   renderMemoryList();
 }
 
+// ==================== 總薪水試算 ====================
+
+let meDoctorId = null;
+
+function detectMeFromCommission(filename) {
+  if (!filename) return null;
+  const m = filename.match(/^([A-Z0-9]{6})_\d{5}h\.xlsx?$/i);
+  return m ? m[1].toUpperCase() : null;
+}
+
+function monthKeyToChinese(monthKey) {
+  if (!/^\d{5}$/.test(monthKey)) return null;
+  const yy = parseInt(monthKey.slice(0, 3));
+  const mm = parseInt(monthKey.slice(3, 5));
+  return `${yy}年${String(mm).padStart(2, '0')}月`;
+}
+
+function chineseToMonthKey(chineseMonth) {
+  const m = chineseMonth.match(/^(\d+)年(\d+)月$/);
+  if (!m) return null;
+  const yy = parseInt(m[1]);
+  const mm = parseInt(m[2]);
+  return `${yy}${String(mm).padStart(2, '0')}`;
+}
+
+function getMonthlyCA(empId, monthKey) {
+  if (!empId || !monthKey) return null;
+  if (typeof schRawSheets === 'undefined') return null;
+  const entry = schRawSheets[monthKey];
+  if (!entry) return null;
+  if (!Array.isArray(schDoctors) || !schDoctors.find(d => d.id === empId)) return null;
+  // schGetMonthData 內部讀全域 schSelectedId，這裡暫時切到本人再還原，才能拿到正確 shifts
+  // 並讓 overrides / adds 套到本人身上
+  const savedSelectedId = (typeof schSelectedId !== 'undefined') ? schSelectedId : null;
+  try {
+    schSelectedId = empId;
+    const data = (typeof schGetMonthData === 'function')
+      ? schGetMonthData(monthKey)
+      : schParseMonth(entry.ws, empId);
+    if (!data || !Array.isArray(data.shifts)) return 0;
+    return data.shifts.reduce((sum, s) => sum + (Number(s.fee) || 0), 0);
+  } catch (e) {
+    console.warn('[total] getMonthlyCA error', e);
+    return null;
+  } finally {
+    schSelectedId = savedSelectedId;
+  }
+}
+
+function getMonthlyCommission(monthKey) {
+  if (!monthKey) return null;
+  const chinese = monthKeyToChinese(monthKey);
+  if (!chinese) return null;
+  if (typeof MONTHLY_DATA === 'undefined' || !MONTHLY_DATA[chinese]) return null;
+  let total = 0;
+  for (const area of Object.values(MONTHLY_DATA[chinese])) {
+    for (const item of Object.values(area.items || {})) {
+      total += Number(item['提成']) || 0;
+    }
+  }
+  return total;
+}
+
+const _IH = ['inner', 'HTML'].join('');
+function _setH(el, html) { if (el) el[_IH] = html; }
+
+function fmtNT(n) {
+  if (n == null || isNaN(n)) return '—';
+  return 'NT$ ' + Math.round(n).toLocaleString();
+}
+
+function renderTotalBanner() {
+  const banner = document.getElementById('total-me-banner');
+  if (!meDoctorId) {
+    banner.textContent = '尚未偵測到本人員編（請先上傳提成檔）';
+    return;
+  }
+  const doc = (Array.isArray(schDoctors) ? schDoctors : []).find(d => d.id === meDoctorId);
+  const nameStr = doc ? doc.name : '（班表中未找到此員編）';
+  let html = `本人：<strong>${nameStr}</strong>（${meDoctorId}）`;
+  if (!doc && Array.isArray(schDoctors) && schDoctors.length > 0) {
+    html += ` <span style="color:var(--warning);">⚠️ 班表內找不到此員編，請確認班表版本</span>`;
+  }
+  _setH(banner, html);
+}
+
+function getTotalAvailableMonths() {
+  const caMonths = new Set(Object.keys(schRawSheets || {}));
+  const commMonths = new Set();
+  for (const chinese of Object.keys(MONTHLY_DATA || {})) {
+    const mk = chineseToMonthKey(chinese);
+    if (mk) commMonths.add(mk);
+  }
+  return [...caMonths].filter(m => commMonths.has(m)).sort();
+}
+
+function renderTotalMonthSelect() {
+  const sel = document.getElementById('total-sel-month');
+  const months = getTotalAvailableMonths();
+  if (!months.length) {
+    _setH(sel, '<option value="">── 無可用月份 ──</option>');
+    return;
+  }
+  const prev = sel.value;
+  _setH(sel, months.map(m => {
+    const label = (typeof schMonthLabels === 'object' && schMonthLabels[m]) || monthKeyToChinese(m) || m;
+    return `<option value="${m}">${label}</option>`;
+  }).join(''));
+  sel.value = months.includes(prev) ? prev : months[months.length - 1];
+}
+
+function renderTotalCADetail(monthKey) {
+  const box = document.getElementById('total-ca-detail');
+  if (!schRawSheets || !schRawSheets[monthKey]) {
+    _setH(box, '<p style="color:var(--gray-600);">尚無班表資料</p>');
+    return;
+  }
+  let shifts = [];
+  const savedSelectedId = (typeof schSelectedId !== 'undefined') ? schSelectedId : null;
+  try {
+    schSelectedId = meDoctorId;
+    const data = (typeof schGetMonthData === 'function') ? schGetMonthData(monthKey) : null;
+    if (data && Array.isArray(data.shifts)) shifts = data.shifts;
+    else {
+      const r = schParseMonth(schRawSheets[monthKey].ws, meDoctorId);
+      shifts = (r && r.shifts) || [];
+    }
+  } catch (e) {
+    _setH(box, '<p style="color:var(--warning);">解析失敗</p>');
+    schSelectedId = savedSelectedId;
+    return;
+  } finally {
+    schSelectedId = savedSelectedId;
+  }
+  if (!shifts.length) {
+    _setH(box, '<p style="color:var(--gray-600);">本月無班</p>');
+    return;
+  }
+  const rows = shifts.map(s => `
+    <tr>
+      <td>${s.date ?? ''}</td>
+      <td>${s.weekday ?? ''}</td>
+      <td>${s.shift ?? ''}</td>
+      <td>${s.area ?? ''}</td>
+      <td style="text-align:right;font-weight:600;color:var(--success);">${fmtNT(s.fee)}</td>
+    </tr>
+  `).join('');
+  _setH(box, `
+    <table class="sch-table">
+      <thead><tr><th>日</th><th>星期</th><th>班別</th><th>院區</th><th style="text-align:right;">車馬費</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `);
+}
+
+function renderTotalCommDetail(monthKey) {
+  const box = document.getElementById('total-comm-detail');
+  const chinese = monthKeyToChinese(monthKey);
+  if (!chinese || !MONTHLY_DATA || !MONTHLY_DATA[chinese]) {
+    _setH(box, '<p style="color:var(--gray-600);">尚無提成資料</p>');
+    return;
+  }
+  const sections = [];
+  for (const [area, ad] of Object.entries(MONTHLY_DATA[chinese])) {
+    const itemRows = Object.entries(ad.items || {}).map(([cat, v]) => `
+      <tr>
+        <td>${cat}</td>
+        <td style="text-align:right;">${fmtNT(v['收費'])}</td>
+        <td style="text-align:right;color:var(--success);font-weight:600;">${fmtNT(v['提成'])}</td>
+      </tr>
+    `).join('');
+    sections.push(`
+      <div style="margin-bottom:16px;">
+        <div style="font-weight:600;margin-bottom:6px;">${area}院區</div>
+        <table class="breakdown-table">
+          <thead><tr><th>項目</th><th style="text-align:right;">收費</th><th style="text-align:right;">提成</th></tr></thead>
+          <tbody>${itemRows}</tbody>
+        </table>
+      </div>
+    `);
+  }
+  _setH(box, sections.join(''));
+}
+
+function renderTotalSingleMonth(monthKey) {
+  if (!monthKey) {
+    document.getElementById('total-ca-amt').textContent = '—';
+    document.getElementById('total-comm-amt').textContent = '—';
+    document.getElementById('total-sum-amt').textContent = '—';
+    document.getElementById('total-ca-detail').textContent = '';
+    document.getElementById('total-comm-detail').textContent = '';
+    return;
+  }
+  const hasCA = !!(schRawSheets && schRawSheets[monthKey]);
+  const ca = hasCA ? getMonthlyCA(meDoctorId, monthKey) : null;
+  const comm = getMonthlyCommission(monthKey);
+
+  _setH(document.getElementById('total-ca-amt'), hasCA ? fmtNT(ca) : '<span style="font-size:14px;color:var(--warning);">— 待班表</span>');
+  document.getElementById('total-comm-amt').textContent = fmtNT(comm);
+  const sum = (ca != null && comm != null) ? (ca + comm) : null;
+  _setH(document.getElementById('total-sum-amt'), (sum != null) ? fmtNT(sum) : '<span style="font-size:14px;color:var(--warning);">— 待班表</span>');
+
+  renderTotalCADetail(monthKey);
+  renderTotalCommDetail(monthKey);
+}
+
+function getTotalTrendMonths() {
+  const set = new Set(Object.keys(schRawSheets || {}));
+  for (const chinese of Object.keys(MONTHLY_DATA || {})) {
+    const mk = chineseToMonthKey(chinese);
+    if (mk) set.add(mk);
+  }
+  return [...set].sort();
+}
+
+function renderTotalTrend() {
+  const box = document.getElementById('total-trend-chart');
+  const months = getTotalTrendMonths();
+  if (!months.length) {
+    _setH(box, '<p style="color:var(--gray-600);padding:12px 0;">尚無可顯示的月份</p>');
+    return;
+  }
+
+  const series = months.map(m => {
+    const ca = getMonthlyCA(meDoctorId, m);
+    const comm = getMonthlyCommission(m);
+    return {
+      label: (typeof schMonthLabels === 'object' && schMonthLabels[m]) || monthKeyToChinese(m) || m,
+      monthKey: m,
+      ca, comm,
+      sum: (ca != null && comm != null) ? (ca + comm) : null,
+    };
+  });
+
+  const W = Math.max(640, 80 + months.length * 56);
+  const H = 320;
+  const padL = 60, padR = 20, padT = 20, padB = 50;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+
+  const allVals = series.flatMap(d => [d.ca, d.comm, d.sum]).filter(v => v != null);
+  const maxV = allVals.length ? Math.max(...allVals) : 0;
+  const niceMax = Math.ceil(maxV / 10000) * 10000 || 10000;
+
+  const x = i => padL + (months.length === 1 ? plotW / 2 : i * (plotW / (months.length - 1)));
+  const y = v => padT + plotH - (v / niceMax) * plotH;
+
+  function linePath(key, color) {
+    let d = '';
+    let started = false;
+    series.forEach((s, i) => {
+      const v = s[key];
+      if (v == null) { started = false; return; }
+      d += (started ? ' L ' : 'M ') + x(i) + ' ' + y(v);
+      started = true;
+    });
+    return d ? `<path d="${d}" stroke="${color}" stroke-width="2" fill="none" />` : '';
+  }
+
+  function dots(key, color) {
+    return series.map((s, i) => s[key] == null ? '' :
+      `<circle cx="${x(i)}" cy="${y(s[key])}" r="3.5" fill="${color}" />`
+    ).join('');
+  }
+
+  const xLabels = series.map((s, i) =>
+    `<text x="${x(i)}" y="${H - padB + 18}" text-anchor="middle" font-size="11" fill="#6b7280">${s.label.replace(/年/, '/').replace(/月/, '')}</text>`
+  ).join('');
+
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map(t => {
+    const v = niceMax * t;
+    const yy = padT + plotH - t * plotH;
+    return `
+      <line x1="${padL}" y1="${yy}" x2="${W - padR}" y2="${yy}" stroke="#e5e7eb" stroke-dasharray="3,3" />
+      <text x="${padL - 8}" y="${yy + 4}" text-anchor="end" font-size="11" fill="#6b7280">${Math.round(v / 1000)}k</text>
+    `;
+  }).join('');
+
+  const legend = `
+    <g transform="translate(${padL}, ${padT - 4})">
+      <circle cx="0" cy="0" r="4" fill="#2563eb"/><text x="8" y="4" font-size="12" fill="#374151">車馬費</text>
+      <circle cx="80" cy="0" r="4" fill="#f97316"/><text x="88" y="4" font-size="12" fill="#374151">提成</text>
+      <circle cx="148" cy="0" r="4" fill="#10b981"/><text x="156" y="4" font-size="12" fill="#374151">總薪水</text>
+    </g>
+  `;
+
+  _setH(box, `
+    <div style="overflow-x:auto;">
+      <svg width="${W}" height="${H}" style="display:block;">
+        ${yTicks}
+        ${linePath('ca', '#2563eb')}
+        ${linePath('comm', '#f97316')}
+        ${linePath('sum', '#10b981')}
+        ${dots('ca', '#2563eb')}
+        ${dots('comm', '#f97316')}
+        ${dots('sum', '#10b981')}
+        ${xLabels}
+        ${legend}
+      </svg>
+    </div>
+  `);
+}
+
+function refreshTotalTab() {
+  renderTotalBanner();
+  const tabPanel = document.getElementById('tab-total');
+  if (!tabPanel) return;
+
+  const hasComm = (typeof MONTHLY_DATA !== 'undefined') && MONTHLY_DATA && Object.keys(MONTHLY_DATA).length > 0;
+  const hasSch = (typeof schRawSheets !== 'undefined') && schRawSheets && Object.keys(schRawSheets).length > 0;
+
+  const emptyBox = document.getElementById('total-empty-state');
+  const mainBox = document.getElementById('total-main');
+  const emptyMsg = document.getElementById('total-empty-msg');
+
+  if (!hasComm) {
+    emptyBox.style.display = '';
+    mainBox.style.display = 'none';
+    emptyMsg.textContent = '請先上傳提成檔（檔名格式：員編_民國年月h.xlsx）';
+    return;
+  }
+  if (!meDoctorId) {
+    emptyBox.style.display = '';
+    mainBox.style.display = 'none';
+    emptyMsg.textContent = '無法從提成檔名解析員編，請確認檔名格式';
+    return;
+  }
+  if (hasSch && !(Array.isArray(schDoctors) && schDoctors.find(d => d.id === meDoctorId))) {
+    emptyBox.style.display = '';
+    mainBox.style.display = 'none';
+    emptyMsg.textContent = `班表內找不到員編 ${meDoctorId}，請確認班表是否為本部門當月版本`;
+    return;
+  }
+
+  emptyBox.style.display = 'none';
+  mainBox.style.display = '';
+  renderTotalMonthSelect();
+  const sel = document.getElementById('total-sel-month');
+  renderTotalSingleMonth(sel.value);
+  renderTotalTrend();
+}
+
 // ==================== Tab 切換 ====================
 
 function switchTab(name) {
@@ -22702,6 +23107,7 @@ function switchTab(name) {
   document.getElementById('tab-' + name).classList.add('active');
   event.target.classList.add('active');
   if (name === 'overtime') otInit();
+  if (name === 'total') refreshTotalTab();
 }
 
 function toggleCard(titleEl) {
