@@ -22992,8 +22992,8 @@ function renderTotalTrend() {
   });
 
   const W = Math.max(640, 80 + months.length * 56);
-  const H = 320;
-  const padL = 60, padR = 20, padT = 20, padB = 50;
+  const H = 340;
+  const padL = 60, padR = 20, padT = 44, padB = 50;
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
 
@@ -23037,7 +23037,7 @@ function renderTotalTrend() {
   }).join('');
 
   const legend = `
-    <g transform="translate(${padL}, ${padT - 4})">
+    <g transform="translate(${padL}, 14)">
       <circle cx="0" cy="0" r="4" fill="#2563eb"/><text x="8" y="4" font-size="12" fill="#374151">車馬費</text>
       <circle cx="80" cy="0" r="4" fill="#f97316"/><text x="88" y="4" font-size="12" fill="#374151">提成</text>
       <circle cx="148" cy="0" r="4" fill="#10b981"/><text x="156" y="4" font-size="12" fill="#374151">總薪水</text>
