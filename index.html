@@ -22999,7 +22999,8 @@ function renderTotalTrend() {
 
   const allVals = series.flatMap(d => [d.ca, d.comm, d.sum]).filter(v => v != null);
   const maxV = allVals.length ? Math.max(...allVals) : 0;
-  const niceMax = Math.ceil(maxV / 10000) * 10000 || 10000;
+  // Y 軸至少到 60 萬，超過時自動往上長
+  const niceMax = Math.max(600000, Math.ceil(maxV / 10000) * 10000 || 10000);
 
   const x = i => padL + (months.length === 1 ? plotW / 2 : i * (plotW / (months.length - 1)));
   const y = v => padT + plotH - (v / niceMax) * plotH;
