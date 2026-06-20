@@ -33,7 +33,8 @@
 
   /* Tabs */
   .tabs { display: flex; background: white; border-bottom: 1px solid var(--gray-200); padding: 0 32px; }
-  .tab { padding: 16px 20px; cursor: pointer; font-size: 14px; font-weight: 500; color: var(--gray-600); border-bottom: 3px solid transparent; transition: all .2s; white-space: nowrap; }
+  .tab { display: inline-flex; align-items: center; gap: 6px; padding: 16px 20px; cursor: pointer; font-size: 14px; font-weight: 500; color: var(--gray-600); border-bottom: 3px solid transparent; transition: all .2s; white-space: nowrap; }
+  .tab svg { flex-shrink: 0; }
   .tab.active { color: var(--primary); border-bottom-color: var(--primary); }
   .tab:hover:not(.active) { color: var(--gray-900); }
 
@@ -20313,11 +20314,11 @@ var __async = (__this, __arguments, generator) => {
 </div>
 
 <div class="tabs">
-  <div class="tab active" onclick="switchTab('overtime')">📝 加班單產生器</div>
-  <div class="tab" onclick="switchTab('schedule')">📅 用班表計算車馬費</div>
-  <div class="tab" onclick="switchTab('report')">📊 提成月報</div>
-  <div class="tab" onclick="switchTab('total')">💰 總薪水試算</div>
-  <div class="tab" onclick="switchTab('calc')">🚗 車馬費計算器</div>
+  <div class="tab active" onclick="switchTab('overtime')"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.659 22H18a2 2 0 0 0 2-2V8a2.4 2.4 0 0 0-.706-1.706l-3.588-3.588A2.4 2.4 0 0 0 14 2H6a2 2 0 0 0-2 2v9.34"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10.378 12.622a1 1 0 0 1 3 3.003L8.36 20.637a2 2 0 0 1-.854.506l-2.867.837a.5.5 0 0 1-.62-.62l.836-2.869a2 2 0 0 1 .506-.853z"/></svg>加班單產生器</div>
+  <div class="tab" onclick="switchTab('schedule')"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/><path d="M8 14h.01"/><path d="M12 14h.01"/><path d="M16 14h.01"/><path d="M8 18h.01"/><path d="M12 18h.01"/><path d="M16 18h.01"/></svg>用班表計算車馬費</div>
+  <div class="tab" onclick="switchTab('report')"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>提成月報</div>
+  <div class="tab" onclick="switchTab('total')"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/></svg>總薪水試算</div>
+  <div class="tab" onclick="switchTab('calc')"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2"/><circle cx="7" cy="17" r="2"/><path d="M9 17h6"/><circle cx="17" cy="17" r="2"/></svg>車馬費計算器</div>
 </div>
 
 <div class="content">
