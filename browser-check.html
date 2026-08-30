@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>瀏覽器功能檢查 — 能不能讀取資料夾</title>
+<style>
+  body { font-family: -apple-system, "PingFang TC", "Microsoft JhengHei", sans-serif;
+         max-width: 640px; margin: 40px auto; padding: 0 20px; line-height: 1.7;
+         color: #222; }
+  h1 { font-size: 22px; border-bottom: 3px solid #2563eb; padding-bottom: 10px; }
+  h2 { font-size: 19px; margin-top: 8px; }
+  .step { background: #f1f5f9; border-left: 4px solid #2563eb;
+          padding: 14px 18px; margin: 18px 0; border-radius: 0 6px 6px 0; }
+  button { font-size: 17px; padding: 13px 24px; background: #2563eb; color: #fff;
+           border: 0; border-radius: 8px; cursor: pointer; margin: 6px 6px 6px 0; }
+  button:hover { filter: brightness(1.1); }
+  #verdict, #verdict2 { font-size: 18px; font-weight: 700; padding: 18px;
+             border-radius: 8px; margin: 20px 0 6px; display: none; }
+  .ok   { background: #dcfce7; border: 2px solid #16a34a; color: #14532d; }
+  .no   { background: #fee2e2; border: 2px solid #dc2626; color: #7f1d1d; }
+  .huh  { background: #fef9c3; border: 2px solid #ca8a04; color: #713f12; }
+  #raw, #raw2 { background: #1e293b; color: #e2e8f0; padding: 14px; border-radius: 6px;
+         font-family: ui-monospace, Menlo, monospace; font-size: 13px;
+         white-space: pre-wrap; word-break: break-all; display: none; }
+  .hint { color: #64748b; font-size: 14px; }
+  hr { margin: 36px 0; border: 0; border-top: 2px dashed #cbd5e1; }
+</style>
+</head>
+<body>
+
+<h1>瀏覽器功能檢查：能不能讀取資料夾</h1>
+
+<p>薪水分析工具有一個「把檔案丟進資料夾，開網頁就自動更新」的功能。
+那個功能需要瀏覽器支援讓網頁讀取你指定的資料夾——<strong>不是每個瀏覽器都做得到</strong>
+（目前 Chrome 與 Edge 可以，Safari 不行）。</p>
+
+<p>這一頁幫你在自己的電腦上實際測一次。</p>
+
+<div class="step">
+  <strong>你的檔案不會被上傳到任何地方。</strong>
+  這一頁沒有連到網路上任何伺服器，測試也只會<strong>數資料夾裡有幾個檔案</strong>，
+  不會讀取任何檔案的內容。想確認的話，按 F12 打開「Network（網路）」分頁，
+  重新整理，看得到它對外沒有任何連線。
+</div>
+
+<h2>測試一：讀不讀得到</h2>
+
+<p>按下面的按鈕，選一個資料夾（選哪個都可以）。如果瀏覽器問你要不要允許，按「允許」。</p>
+
+<button id="go">測試一 — 選一個資料夾</button>
+
+<div id="verdict"></div>
+<div id="raw"></div>
+
+<hr>
+
+<h2>測試二：下次還記不記得</h2>
+
+<p>「讀得到」跟「下次開還記得」是兩件事。如果每次開都要重選一次資料夾，那就不夠方便了。</p>
+
+<div class="step">
+  <strong>照順序做，不要跳</strong>
+  <ol>
+    <li>先做完測試一</li>
+    <li>按<strong>綠色按鈕</strong>，選一個資料夾</li>
+    <li><strong>把整個瀏覽器關掉</strong>（不只是關分頁），再重新打開這一頁</li>
+    <li>按<strong>橘色按鈕</strong>（不要按綠色的）</li>
+  </ol>
+</div>
+
+<button id="save" style="background:#16a34a">記住這個資料夾</button>
+<button id="recall" style="background:#ea580c">下次開啟：還記得嗎？</button>
+
+<div id="verdict2"></div>
+<div id="raw2"></div>
+
+<hr>
+
+<h2>結果代表什麼</h2>
+
+<table style="border-collapse:collapse;width:100%">
+  <tr style="background:#f1f5f9">
+    <th style="text-align:left;padding:8px;border:1px solid #cbd5e1">測試二的結果</th>
+    <th style="text-align:left;padding:8px;border:1px solid #cbd5e1">實際用起來</th>
+  </tr>
+  <tr><td style="padding:8px;border:1px solid #cbd5e1">✅ 完全記住</td>
+      <td style="padding:8px;border:1px solid #cbd5e1">開網頁就自動更新，什麼都不用按</td></tr>
+  <tr><td style="padding:8px;border:1px solid #cbd5e1">⚠️ 半記得</td>
+      <td style="padding:8px;border:1px solid #cbd5e1">開網頁後按一下「允許」，不用重選資料夾</td></tr>
+  <tr><td style="padding:8px;border:1px solid #cbd5e1">❌ 記不住</td>
+      <td style="padding:8px;border:1px solid #cbd5e1">每次都要重選資料夾，那就改用拖曳上傳比較快</td></tr>
+</table>
+
+<p class="hint">macOS 上的 Chrome 實測結果是「半記得」：關掉瀏覽器再開，資料夾記得，但要按一次允許。</p>
+
+<script>
+const verdictEl = document.getElementById('verdict');
+const rawEl = document.getElementById('raw');
+
+function show(cls, msg, raw) {
+  verdictEl.className = cls;
+  verdictEl.textContent = msg;
+  verdictEl.style.display = 'block';
+  rawEl.textContent = raw;
+  rawEl.style.display = 'block';
+}
+
+// 環境資訊。這幾個值決定這個功能准不准用。
+function env() {
+  return [
+    '開啟方式（protocol）：' + location.protocol,
+    'isSecureContext：' + window.isSecureContext,
+    'showDirectoryPicker：' + typeof window.showDirectoryPicker,
+    'User-Agent：' + navigator.userAgent,
+  ].join('\n');
+}
+
+document.getElementById('go').addEventListener('click', async () => {
+  if (typeof window.showDirectoryPicker !== 'function') {
+    show('no',
+      '❌ 你的瀏覽器沒有這個功能。Safari 就會是這樣。' +
+      '要用「自動更新」的話得換 Chrome 或 Edge，' +
+      '不換也沒關係——用拖曳上傳一樣可以。',
+      env());
+    return;
+  }
+
+  try {
+    const dir = await window.showDirectoryPicker();
+
+    // 只數數量，不讀任何檔案內容
+    let files = 0, pdfs = 0;
+    for await (const [name, handle] of dir.entries()) {
+      if (handle.kind === 'file') {
+        files++;
+        if (name.toLowerCase().endsWith('.pdf')) pdfs++;
+      }
+    }
+
+    show('ok',
+      '✅ 讀得到！你的瀏覽器支援這個功能。接著做下面的測試二。',
+      env() + '\n\n選到的資料夾：' + dir.name +
+      '\n裡面有 ' + files + ' 個檔案，其中 ' + pdfs + ' 個是 PDF' +
+      '\n（只數數量，沒有讀取任何內容）');
+
+  } catch (e) {
+    if (e && e.name === 'AbortError') {
+      show('huh',
+        '⚠️ 你按了取消，所以還沒測到。請再按一次按鈕，這次選一個資料夾。',
+        env() + '\n\n錯誤：' + e.name);
+    } else if (e && e.name === 'SecurityError') {
+      show('no',
+        '❌ 瀏覽器擋下來了。可能是這一頁的開啟方式不被允許使用這個功能。',
+        env() + '\n\n錯誤：' + e.name + ' — ' + e.message);
+    } else {
+      show('huh',
+        '⚠️ 出現沒預期到的狀況，下面黑底那段是細節。',
+        env() + '\n\n錯誤：' + (e && e.name) + ' — ' + (e && e.message));
+    }
+  }
+});
+
+// ===== 測試二：授權能不能存下來 =====
+// 資料夾把手（handle）可以存進 IndexedDB。問題是取回來之後權限還在不在。
+const v2 = document.getElementById('verdict2');
+const r2 = document.getElementById('raw2');
+
+function show2(cls, msg, raw) {
+  v2.className = cls; v2.textContent = msg; v2.style.display = 'block';
+  r2.textContent = raw; r2.style.display = 'block';
+}
+
+function db() {
+  return new Promise((res, rej) => {
+    const q = indexedDB.open('browser-check', 1);
+    q.onupgradeneeded = () => q.result.createObjectStore('h');
+    q.onsuccess = () => res(q.result);
+    q.onerror = () => rej(q.error);
+  });
+}
+
+document.getElementById('save').addEventListener('click', async () => {
+  try {
+    const dir = await window.showDirectoryPicker();
+    const d = await db();
+    await new Promise((res, rej) => {
+      const tx = d.transaction('h', 'readwrite');
+      tx.objectStore('h').put(dir, 'dir');
+      tx.oncomplete = res; tx.onerror = () => rej(tx.error);
+    });
+    show2('ok',
+      '✅ 存起來了。現在請把整個瀏覽器關掉，重新打開這一頁，然後按橘色按鈕。',
+      '已記住：' + dir.name);
+  } catch (e) {
+    if (e && e.name === 'AbortError') {
+      show2('huh', '⚠️ 你按了取消。再按一次綠色按鈕，這次選一個資料夾。', '錯誤：' + e.name);
+    } else {
+      show2('no',
+        '❌ 存不起來，代表這個瀏覽器沒辦法記住資料夾，每次開都要重選。',
+        '錯誤：' + (e && e.name) + ' — ' + (e && e.message));
+    }
+  }
+});
+
+document.getElementById('recall').addEventListener('click', async () => {
+  try {
+    const d = await db();
+    const dir = await new Promise((res, rej) => {
+      const tx = d.transaction('h', 'readonly');
+      const q = tx.objectStore('h').get('dir');
+      q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error);
+    });
+
+    if (!dir) {
+      show2('no',
+        '❌ 沒有存到東西，代表記不住，每次開都要重選資料夾。',
+        '瀏覽器的資料庫裡沒有記錄。（也可能是你還沒按綠色按鈕）');
+      return;
+    }
+
+    // 把手還在，但權限可能已經被收回
+    const q = await dir.queryPermission({ mode: 'read' });
+    if (q === 'granted') {
+      let n = 0;
+      for await (const [, h] of dir.entries()) if (h.kind === 'file') n++;
+      show2('ok',
+        '✅✅ 完全記住了！關掉重開也不用重選、不用再按允許，直接就讀得到。',
+        '資料夾：' + dir.name + '\n權限狀態：' + q + '\n讀到 ' + n + ' 個檔案（只數數量）');
+      return;
+    }
+
+    // 要重新要一次權限，但不必重選資料夾
+    const r = await dir.requestPermission({ mode: 'read' });
+    if (r === 'granted') {
+      let n = 0;
+      for await (const [, h] of dir.entries()) if (h.kind === 'file') n++;
+      show2('huh',
+        '⚠️ 半記得：資料夾記住了，但每次開要按一下「允許」。' +
+        '不用重選資料夾，但也不是完全自動。',
+        '資料夾：' + dir.name + '\n重開後權限：' + q + ' → 按允許後：' + r +
+        '\n讀到 ' + n + ' 個檔案');
+    } else {
+      show2('no',
+        '❌ 記得資料夾，但要不到權限。若你剛才按了「不允許」，' +
+        '要到瀏覽器的網站設定裡改回來。',
+        '資料夾：' + dir.name + '\n權限：' + q + ' → ' + r);
+    }
+  } catch (e) {
+    show2('no',
+      '❌ 取不回來，代表記不住，每次開都要重選資料夾。',
+      '錯誤：' + (e && e.name) + ' — ' + (e && e.message));
+  }
+});
+</script>
+
+</body>
+</html>
