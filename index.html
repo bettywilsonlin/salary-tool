@@ -20788,6 +20788,104 @@ function classifyUploadFile(name) {
   return null;
 }
 
+// 把提成月報讀到的「看診人次」接到薪資資料那一邊。
+//
+// 背景（2026-09-02 使用者在畫面上看到「看診人次全部是 0」才發現的落差）：
+//   看診人次不在薪資條 PDF 上，它在提成的 Excel 裡。
+//   Python 版由 parse_salary.py:309 把它併進每個月的薪資資料；
+//   瀏覽器版沒有人做這件事——delta:22783 的 parseHFile 確實讀到了人次，
+//   但存在提成月報自己的結構（MONTHLY_DATA[月][院區].人次），
+//   而 delta:22834 的 mergeIntoMonthlyData 只寫那一邊，不碰薪資資料。
+//   於是效率指標讀 d.看診人次 讀到 undefined，`|| 0` 之後印出 0。
+//
+// 兩邊的月份寫法不一樣，這是這支程式存在的另一個理由：
+//   提成月報：「115年03月」（delta:22771 組出來的）
+//   薪資資料：「115.03」
+
+// 提成月報的月份寫法 → 薪資資料的月份寫法。認不得就回 null。
+// 認不得時**不猜**：寧可少一個月的人次，也不要塞一個對不上的鍵，
+// 那會讓某個月安靜地掛上別的月份的數字，而畫面上看起來完全正常。
+function toSalaryMonthKey(label) {
+  const m = String(label).match(/^(\d+)年(\d{1,2})月$/);
+  if (!m) return null;
+  return `${m[1]}.${String(parseInt(m[2], 10)).padStart(2, "0")}`;
+}
+
+// monthlyData：提成月報的結構 { "115年03月": { "永康": { 人次: 367 }, ... } }
+// 回傳：{ "115.03": 427 }
+//
+// ⚠️ 只收錄 Excel 裡真的出現過的月份。沒出現的月份**不要**放 0——
+//    畫面要分得出「這個月真的 0 人次」跟「這個月沒上傳提成表」，
+//    後者顯示「—」，前者顯示 0。都塞 0 就分不出來了。
+function visitsByMonth(monthlyData) {
+  const out = {};
+  if (!monthlyData || typeof monthlyData !== "object") return out;
+
+  for (const [label, areas] of Object.entries(monthlyData)) {
+    const key = toSalaryMonthKey(label);
+    if (key === null) continue;
+    let total = 0;
+    if (areas && typeof areas === "object") {
+      for (const areaData of Object.values(areas)) {
+        // 缺欄位或不是數字時當 0。NaN 一旦混進來會一路傳到畫面上，
+        // 而中間沒有任何一步會報錯。
+        const n = areaData && Number(areaData.人次);
+        if (Number.isFinite(n)) total += n;
+      }
+    }
+    out[key] = total;
+  }
+  return out;
+}
+
+// ---- 提成總計與類別明細 ----
+//
+// 同一座橋的第二段。畫面上「提成類別細項」表的類別列讀 d.提成類別[類別].提成，
+// 「提成總計」列讀 d.提成系統值（delta:25231、25203），兩個都來自提成 Excel。
+//
+// **這裡的算法是實測驗過的，不是推論的**（test/golden-commission.mjs）：
+// 拿 29 個真的提成 Excel 跑瀏覽器路徑，跟 delta 內嵌的 Python 答案逐月比 ——
+//   提成總計：20 個月 **20/20 完全相同**
+//   類別明細：180 格中 **174 格相同**；剩下 6 格是同一筆錢掛在不同類別
+//             （Excel 出現「住院技術及報告(大)」這種段落標題時，Python 把錢繼續算在
+//              上一個類別、瀏覽器算給那個段落），**每月總計仍然相同**。
+//              使用者 2026-09-02 知情後選擇採用瀏覽器的分法。
+//
+// 唯一需要改名的地方：瀏覽器把門診人次那一類叫成標題原文（例「門診人次統計(小)」），
+// 金額與 Python 相同。不改名的話畫面會多一個沒人認得的類別，而「門診人次」那列會不見。
+function 正規化類別名(name) {
+  return /^門診人次統計/.test(name) ? "門診人次" : name;
+}
+
+function commissionByMonth(monthlyData) {
+  const out = {};
+  if (!monthlyData || typeof monthlyData !== "object") return out;
+
+  for (const [label, areas] of Object.entries(monthlyData)) {
+    const key = toSalaryMonthKey(label);
+    if (key === null) continue;
+    const 類別 = {};
+    let 總計 = 0;
+    if (areas && typeof areas === "object") {
+      for (const areaData of Object.values(areas)) {
+        const items = areaData && areaData.items;
+        if (!items || typeof items !== "object") continue;
+        for (const [rawName, v] of Object.entries(items)) {
+          const name = 正規化類別名(rawName);
+          const 提成 = Number(v && v.提成);
+          const 收費 = Number(v && v.收費);
+          if (!類別[name]) 類別[name] = { 提成: 0, 收費: 0 };
+          // 改名之後可能撞到既有類別，所以一律用加的，不可以指派覆蓋
+          if (Number.isFinite(提成)) { 類別[name].提成 += 提成; 總計 += 提成; }
+          if (Number.isFinite(收費)) 類別[name].收費 += 收費;
+        }
+      }
+    }
+    out[key] = { 提成系統值: 總計, 提成類別: 類別 };
+  }
+  return out;
+}
+
 </script>
 </head>
 <body>
@@ -20897,12 +20995,14 @@ function classifyUploadFile(name) {
 </div>
 
 <div class="tabs">
+  <!-- 頁籤順序由使用者 2026-09-02 指定：加班單產生器搬到最後，前面依「看資料 → 對帳」排。
+       switchTab 是靠名字不是靠位置，換順序不影響功能（已查證 delta:25025）。 -->
   <div class="tab active" onclick="switchTab('salary')">💰 薪資總覽</div>
-  <div class="tab" onclick="switchTab('overtime')">📝 加班單產生器</div>
-  <div class="tab" onclick="switchTab('schedule')">📅 用班表計算車馬費</div>
   <div class="tab" onclick="switchTab('report')">📊 提成月報</div>
-  <div class="tab" onclick="switchTab('calc')">🚗 車馬費計算器</div>
+  <div class="tab" onclick="switchTab('schedule')">📅 用班表計算車馬費</div>
   <div class="tab" onclick="switchTab('total')">🧮 總薪水試算</div>
+  <div class="tab" onclick="switchTab('calc')">🚗 車馬費計算器</div>
+  <div class="tab" onclick="switchTab('overtime')">📝 加班單產生器</div>
 </div>
 
 <div class="content">
@@ -24103,13 +24203,18 @@ function renderSalary() {
   effThead += '</tr>';
   const effRows = [
     {label:'臨床時數',     fn: d => d.臨床時數 || 0, unit:'h'},
-    {label:'看診人次',     fn: d => d.看診人次 || 0, unit:''},
+    // 「這個月沒上傳提成表」與「這個月真的 0 人次」是兩件事，畫面上要分得出來。
+    // 原本兩種都印 0，公開版因為沒人把提成表的人次接過來，整列變成一排 0，
+    // 看起來像「這幾個月都沒看病人」——是講錯話。2026-09-02 使用者抓到。
+    {label:'看診人次',     fn: d => (d.看診人次 == null) ? '—' : d.看診人次, unit:''},
     {label:'每小時薪資（純臨床班）', fn: d => d.臨床時數 ? Math.round(((d.臨床班車馬費||0)+(d.臨床班提成||0))/d.臨床時數) : 0, unit:'元/h'},
     {label:'每小時薪資（含觀區）',  fn: d => {
       const tot = (d.臨床時數||0)+(d.觀區時數||0);
       return tot ? Math.round(((d.臨床班車馬費||0)+(d.觀區班薪資||0)+(d.臨床班提成||0))/tot) : 0;
     }, unit:'元/h'},
-    {label:'每人次提成',    fn: d => d.看診人次 ? Math.round((d.提成系統值||d.臨床班提成||0)/d.看診人次) : 0, unit:'元/人'},
+    // 同上：沒資料印「—」，真的 0 人次才印 0（那個月除不出每人次，0 是合理的顯示）
+    {label:'每人次提成',    fn: d => d.看診人次 ? Math.round((d.提成系統值||d.臨床班提成||0)/d.看診人次)
+                                     : (d.看診人次 == null ? '—' : 0), unit:'元/人'},
     {label:'車馬費佔比',   fn: d => d.薪資總計 ? ((d.車馬費小計||0)/d.薪資總計*100).toFixed(1) : 0, unit:'%'},
     {label:'提成佔比',     fn: d => d.薪資總計 ? ((d.臨床班提成||0)/d.薪資總計*100).toFixed(1) : 0, unit:'%'},
     {label:'津貼佔比',     fn: d => d.薪資總計 ? ((d.其他津貼||0)/d.薪資總計*100).toFixed(1) : 0, unit:'%'},
@@ -24119,7 +24224,10 @@ function renderSalary() {
     effTbody += `<tr><td>${r.label}</td>`;
     data.forEach(d => {
       const v = r.fn(d);
-      effTbody += `<td style="text-align:right;">${typeof v==='number'?v.toLocaleString():v}${r.unit?' '+r.unit:''}</td>`;
+      // 「—」代表沒資料，後面不要接單位——「— 元/人」讀起來像壞掉
+      effTbody += v === '—'
+        ? `<td style="text-align:right;color:#9ca3af;">—</td>`
+        : `<td style="text-align:right;">${typeof v==='number'?v.toLocaleString():v}${r.unit?' '+r.unit:''}</td>`;
     });
     effTbody += '</tr>';
   });
@@ -24141,8 +24249,10 @@ function renderSalary() {
   // 最上方加一列「看診人次」（每月總人次，方便對照各類別提成）
   let cTbody = `<tr><td>看診人次</td>`;
   data.forEach(d => {
-    const n = d.看診人次 || 0;
-    cTbody += `<td style="text-align:right;">${n.toLocaleString()}</td>`;
+    // 沒上傳提成表時顯示「—」，跟效率指標那張表一致（2026-09-02）
+    cTbody += d.看診人次 == null
+      ? `<td style="text-align:right;color:#9ca3af;">—</td>`
+      : `<td style="text-align:right;">${d.看診人次.toLocaleString()}</td>`;
   });
   cTbody += '</tr>';
   catOrder.forEach(cat => {
@@ -24155,8 +24265,10 @@ function renderSalary() {
   });
   cTbody += `<tr style="font-weight:600;background:#f1f5f9;"><td>提成總計</td>`;
   data.forEach(d => {
-    const t = d.提成系統值 || 0;
-    cTbody += `<td style="text-align:right;">${t.toLocaleString()}</td>`;
+    // 同上：沒上傳提成表時顯示「—」，不要印 0 讓人以為那個月提成是零
+    cTbody += d.提成系統值 == null
+      ? `<td style="text-align:right;color:#9ca3af;">—</td>`
+      : `<td style="text-align:right;">${d.提成系統值.toLocaleString()}</td>`;
   });
   cTbody += '</tr>';
   const cTable = document.getElementById('salary-commission-table');
@@ -25047,11 +25159,45 @@ renderCATable();
     //    合成一行會誤觸那道檢查而擋下發布。先算好再指派，C2 就維持原本的嚴格度，
     //    不必為了讓我的程式過關而放寬一道安全檢查。
     const merged = [...byMonth.values()].sort((a, b) => a.月份.localeCompare(b.月份));
+    // 提成表可能比薪資條先進來（記憶還原時就是這個順序），所以每次併薪資列都補一次人次
+    applyVisits(merged);
     window.SALARY_DATA = merged;
     // ⚠️ 不要設 window.SALARY_LAST_UPDATE。那個值是給 delta 的「資料過舊」提示用的，
     //    同事的資料是剛上傳的，跳那個提示只會讓人困惑。
     renderSalary();
     document.dispatchEvent(new CustomEvent("salary-rows-changed"));
+  }
+
+  // ---- 看診人次：從提成月報接到薪資資料（2026-09-02）----
+  //
+  // 為什麼要這座橋：看診人次不在薪資條 PDF 上，它在提成的 Excel 裡。
+  // Python 版由 parse_salary.py:309 併進去；瀏覽器版原本沒有人做，
+  // 所以效率指標那一列在公開版永遠是 0（使用者 2026-09-02 在畫面上看到）。
+  //
+  // ⚠️ 一定要用裸名字 MONTHLY_DATA，**不可以寫 window.MONTHLY_DATA**。
+  //    它在 delta:22723 是 `const MONTHLY_DATA = {}`，最外層的 const 不會變成
+  //    window 的屬性——寫成 window.MONTHLY_DATA 會永遠拿到 undefined，
+  //    而且不報錯、不變紅，只是人次永遠補不上。delta 自己在 :23987 也是用裸名字＋typeof 防護。
+  function applyVisits(rows) {
+    if (typeof MONTHLY_DATA === "undefined") return 0;
+    const 人次表 = visitsByMonth(MONTHLY_DATA);
+    const 提成表 = commissionByMonth(MONTHLY_DATA);
+    let 補上幾個月 = 0;
+    for (const r of rows) {
+      // 用 hasOwnProperty 而不是「有沒有值」——那個月真的 0 人次也要補上去，
+      // 才分得出「0 人次」與「沒上傳提成表」（後者畫面顯示「—」）。
+      if (r && Object.prototype.hasOwnProperty.call(人次表, r.月份)) {
+        r.看診人次 = 人次表[r.月份];
+        補上幾個月++;
+      }
+      // 提成總計與類別明細同一個來源。算法經黃金對照驗過（test/golden-commission.mjs）：
+      // 總計 20 個月 20/20 相同、類別 174/180 相同，差的 6 格是同一筆錢換一個類別。
+      if (r && Object.prototype.hasOwnProperty.call(提成表, r.月份)) {
+        r.提成系統值 = 提成表[r.月份].提成系統值;
+        r.提成類別 = 提成表[r.月份].提成類別;
+      }
+    }
+    return 補上幾個月;
   }
 
   // 解析一批薪資條 PDF。**不碰狀態列**——訊息由 handleFiles 統一組，
@@ -25112,6 +25258,12 @@ renderCATable();
         await handleUnifiedUpload(excels);
         parts.push(`📊 Excel ${excels.length} 個檔（結果看下面那一行）`);
         有好的 = true;
+        // 提成表進來之後，把看診人次補到已經在畫面上的薪資列，然後重畫
+        const 補上幾個月 = applyVisits(window.SALARY_DATA || []);
+        if (補上幾個月) {
+          renderSalary();
+          parts.push(`👥 看診人次補上 ${補上幾個月} 個月`);
+        }
       } else {
         console.error("[公開版] 找不到 handleUnifiedUpload，Excel 沒人處理（delta 格式可能變了）");
         parts.push(`❌ Excel ${excels.length} 個檔沒人處理`);
