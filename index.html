@@ -21350,24 +21350,16 @@ function commissionByMonth(monthlyData) {
       </div>
     </div>
 
-    <!-- 醫師選單 -->
+    <!-- 醫師人事號（手動輸入，2026-09-04 取代原本的下拉選單＋釘選名單） -->
     <div class="card" id="ot-doctor-card" style="display:none;">
-      <div class="card-title">選擇醫師</div>
+      <div class="card-title">輸入人事號</div>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:0;">
-        <select id="ot-doctor-sel" style="max-width:320px;font-size:15px;padding:8px 12px;border:1.5px solid var(--gray-200);border-radius:8px;background:white;cursor:pointer;" onchange="otSelectDoctor(this.value)">
-          <option value="">── 請選擇醫師 ──</option>
-        </select>
-        <button onclick="otToggleManage()" style="font-size:12px;color:var(--gray-600);background:white;border:1px solid var(--gray-200);border-radius:6px;padding:5px 10px;cursor:pointer;">⚙ 管理名單</button>
+        <input id="ot-doctor-input" type="text" placeholder="你的人事號" autocomplete="off"
+               style="max-width:220px;font-size:15px;padding:8px 12px;border:1.5px solid var(--gray-200);border-radius:8px;background:white;"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();otApplyDoctorInput(false);}">
+        <button onclick="otApplyDoctorInput(false)" style="font-size:14px;font-weight:600;padding:8px 18px;border:none;border-radius:8px;cursor:pointer;background:var(--primary);color:white;">帶出加班單</button>
       </div>
-      <div id="ot-manage-panel" style="display:none;margin-top:12px;padding:12px;background:#f9fafb;border-radius:8px;border:1px solid var(--gray-200);">
-        <div style="font-size:12px;font-weight:600;color:#374151;margin-bottom:8px;">勾選要在選單中顯示的醫師：</div>
-        <div id="ot-manage-checkboxes" style="display:flex;flex-wrap:wrap;gap:6px;max-height:180px;overflow-y:auto;"></div>
-        <div style="margin-top:10px;display:flex;gap:8px;">
-          <button onclick="otSelectAllDoctors(true)" style="font-size:11px;padding:3px 8px;border:1px solid #d1d5db;border-radius:4px;cursor:pointer;background:white;">全選</button>
-          <button onclick="otSelectAllDoctors(false)" style="font-size:11px;padding:3px 8px;border:1px solid #d1d5db;border-radius:4px;cursor:pointer;background:white;">全不選</button>
-          <button onclick="document.getElementById('ot-manage-panel').style.display='none'" style="font-size:11px;padding:3px 8px;border:1px solid #d1d5db;border-radius:4px;cursor:pointer;background:white;">關閉</button>
-        </div>
-      </div>
+      <div id="ot-doctor-msg" style="display:none;margin-top:10px;font-size:13px;line-height:1.6;"></div>
     </div>
 
     <!-- 統計＋預覽＋匯出 -->
@@ -22604,68 +22596,112 @@ const SHIFT_GROUPS = {
 };
 let schMonthLabels = {};
 let schPinnedDoctors = new Set();
-let otPinnedDoctors = new Set();
-
 function otToggleDebug() {
   const p = document.getElementById('ot-debug-panel');
   p.style.display = p.style.display === 'none' ? 'block' : 'none';
 }
 
-function otToggleManage() {
-  const p = document.getElementById('ot-manage-panel');
-  if (p.style.display === 'none') {
-    otRenderManageCheckboxes();
-    p.style.display = 'block';
-  } else {
-    p.style.display = 'none';
-  }
+// ──────────────────────────────────────────────────────────────────────────
+// 加班單的醫師：手動輸入人事號（2026-09-04 改）
+//
+// 原本是下拉選單＋「⚙ 管理名單」釘選。拿掉的理由不是釘選壞掉，是它擋在路上——
+// 那個釘選集合沒有預設值，所以沒勾人的時候選單裡一個選項都沒有，每次都得
+// 先開管理名單勾一次才選得到自己。改成直接打人事號之後，釘選就沒有服務對象了，
+// 整組（變數＋四個函式＋勾選面板）一起移除。
+// 同樣的做法先在 worklate_map 上線驗過（commit 9dc3c37），這裡是補回同樣的體驗。
+// ──────────────────────────────────────────────────────────────────────────
+
+// localStorage 的鍵。加 salaryTool. 前綴是為了不跟同機其他工具撞
+// （worklate_map 用的是 worklate_map.doctorId）。
+const OT_DOCTOR_ID_KEY = 'salaryTool.otDoctorId';
+
+// 把使用者打的字對回班表裡真正的人事號；對不到回 null。
+//
+// ⚠️ 一定要回傳「班表原本那個字串」，不能回使用者打的字。下游 otParseForDoctor()
+// 會拿它去逐格比對班表第 3 列的儲存格內容找欄位，大小寫或空白差一點就找不到，
+// 而且不會丟例外——只會安靜地產出一份空的加班單，比報錯還難發現。
+// 所以正規化只做在這裡（上游），傳下去的永遠是班表的寫法。
+function otResolveDoctorId(input, doctors) {
+  const key = String(input == null ? '' : input).trim().toUpperCase();
+  if (!key) return null;
+  const hit = (doctors || []).find(d => String(d.id).trim().toUpperCase() === key);
+  return hit ? hit.id : null;
 }
 
-function otRenderManageCheckboxes() {
-  const container = document.getElementById('ot-manage-checkboxes');
-  container.replaceChildren();
-  for (const d of (schDoctors || [])) {
-    const label = document.createElement('label');
-    label.style.cssText = 'display:flex;align-items:center;gap:5px;font-size:12px;padding:4px 8px;background:white;border:1px solid #e5e7eb;border-radius:4px;cursor:pointer;white-space:nowrap;';
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.value = d.id;
-    cb.checked = otPinnedDoctors.has(d.id);
-    cb.addEventListener('change', otUpdatePinned);
-    label.appendChild(cb);
-    label.appendChild(document.createTextNode(d.name));
-    container.appendChild(label);
-  }
+// 訊息一律用 textContent。人事號是使用者現打的字、姓名是從班表讀出來的，
+// 用 innerHTML 等於把來路不明的字串交給瀏覽器當標記解析。
+function otSetDoctorMsg(text, ok) {
+  const el = document.getElementById('ot-doctor-msg');
+  if (!el) return;
+  el.textContent = text || '';
+  el.style.display = text ? 'block' : 'none';
+  el.style.color = ok ? '#15803d' : '#b91c1c';
 }
 
-function otUpdatePinned() {
-  const checkboxes = document.querySelectorAll('#ot-manage-checkboxes input[type="checkbox"]');
-  otPinnedDoctors = new Set([...checkboxes].filter(cb => cb.checked).map(cb => cb.value));
-  otRefreshDoctorSelect();
+// 記人事號之前要先過同意這一關。
+//
+// 公開版（scripts/build-public.mjs 產出的那份）有一個「記住這台電腦上的資料」開關，
+// 預設是**關的**，理由寫在 src/consent.mjs 開頭：這個工具會被同事拿到急診的公用電腦
+// 上開，記憶預設開的話，前一個人用完走了，下一個人開同一個網頁就看得到他的東西。
+// 人事號同樣會指認到人，所以跟著走同一個開關，不另開後門。
+//
+// 正本（delta）沒有那支模組，readConsent 根本不存在 —— 那代表這是院內自用版，
+// 只有你一個人在自己的電腦上開，也沒有開關可以勾，所以視為同意。
+function otConsentOn() {
+  if (typeof readConsent !== 'function') return true;
+  try { return readConsent(window.localStorage); } catch (e) { return false; }
 }
 
-function otSelectAllDoctors(checked) {
-  document.querySelectorAll('#ot-manage-checkboxes input[type="checkbox"]').forEach(cb => { cb.checked = checked; });
-  otUpdatePinned();
+// localStorage 可能整個被擋掉（無痕視窗、瀏覽器封鎖網站資料）。擋掉就當作沒有
+// 記憶功能，不能讓「帶出加班單」這件正事跟著失敗，所以每一邊都包 try。
+function otRememberDoctorId(id) {
+  if (!otConsentOn()) return;
+  try { localStorage.setItem(OT_DOCTOR_ID_KEY, id); } catch (e) { /* 沒得記就算了 */ }
 }
 
-function otRefreshDoctorSelect() {
-  const sel = document.getElementById('ot-doctor-sel');
-  const prev = sel.value;
-  while (sel.options.length > 1) sel.remove(1);
-  for (const d of (schDoctors || [])) {
-    if (!otPinnedDoctors.has(d.id)) continue;
-    const opt = document.createElement('option');
-    opt.value = d.id;
-    opt.textContent = `${d.name}（${d.id}）`;
-    sel.appendChild(opt);
-  }
-  if (prev && [...sel.options].some(o => o.value === prev)) {
-    sel.value = prev;
-  } else {
-    sel.value = '';
+function otLoadRememberedDoctorId() {
+  // 讀也要問一次。使用者可能之前勾過、後來取消勾選，那時舊的值還躺在
+  // localStorage 裡，不擋的話等於取消勾選沒有生效。
+  if (!otConsentOn()) return '';
+  try { return localStorage.getItem(OT_DOCTOR_ID_KEY) || ''; } catch (e) { return ''; }
+}
+
+// 給公開版的【🗑 清除這台電腦上的資料】呼叫（src/public/public-ui.mjs 的 forgetStored）。
+// 鍵名只定義在這裡一處，清除端用這個函式而不是自己再寫一次字面值，
+// 免得哪天改了鍵名、清除鈕卻還在清舊的那個，變成「按了但沒清掉」。
+function otForgetDoctorId() {
+  try { localStorage.removeItem(OT_DOCTOR_ID_KEY); } catch (e) { /* 本來就存不進去 */ }
+}
+
+// 按【帶出加班單】或在輸入框按 Enter 的入口。
+// silent=true 是換月份時自動重跑的情況：使用者沒有按任何東西，
+// 這時「請輸入人事號」那句提示會變成無緣無故的紅字，所以壓掉。
+function otApplyDoctorInput(silent) {
+  const box = document.getElementById('ot-doctor-input');
+  const raw = box ? box.value : '';
+  const id  = otResolveDoctorId(raw, schDoctors);
+
+  if (!id) {
     document.getElementById('ot-result-area').style.display = 'none';
+    if (!String(raw == null ? '' : raw).trim()) {
+      otSetDoctorMsg(silent ? '' : '請先輸入你的人事號。', false);
+      return;
+    }
+    // 找不到人一定要講話。靜靜什麼都不做，使用者會以為自己這個月沒班。
+    const total = (schDoctors || []).length;
+    otSetDoctorMsg(
+      `班表裡沒有「${String(raw).trim()}」這個人事號。這張班表共有 ${total} 個人事號`
+      + `（取自最新月份），請對照班表 VS 工作表的人事號那一列。`,
+      false
+    );
+    return;
   }
+
+  // 只有真的對到才記住，免得把打錯的字存起來、下次一開又是錯的。
+  otRememberDoctorId(id);
+  const doc = (schDoctors || []).find(d => d.id === id);
+  otSetDoctorMsg(doc ? `已帶出 ${doc.name}（${id}）的加班單。` : '', true);
+  otSelectDoctor(id);
 }
 
 function handleScheduleInput(files) {
@@ -24659,20 +24695,14 @@ function otSelectMonth(key) {
     b.classList.toggle('active', b.textContent === (schMonthLabels[key] || key));
   });
   const card = document.getElementById('ot-doctor-card');
-  const sel  = document.getElementById('ot-doctor-sel');
   card.style.display = 'block';
-  const prevDoctor = sel.value;
-  while (sel.options.length > 1) sel.remove(1);
-  for (const d of (schDoctors || [])) {
-    if (!otPinnedDoctors.has(d.id)) continue;
-    const opt = document.createElement('option');
-    opt.value = d.id;
-    opt.textContent = `${d.name}（${d.id}）`;
-    sel.appendChild(opt);
-  }
-  if (prevDoctor && [...sel.options].some(o => o.value === prevDoctor)) {
-    sel.value = prevDoctor;
-    otSelectDoctor(prevDoctor);
+
+  // 換月份不必重打人事號：輸入框是空的就把上次記住的填回去，
+  // 使用者已經打了字就不覆蓋他打的，然後重跑一次帶出加班單。
+  const box = document.getElementById('ot-doctor-input');
+  if (box && !box.value) box.value = otLoadRememberedDoctorId();
+  if (box && box.value) {
+    otApplyDoctorInput(true);
   } else {
     document.getElementById('ot-result-area').style.display = 'none';
   }
@@ -25508,6 +25538,10 @@ renderCATable();
     if (typeof dbClearAll === "function") { try { await dbClearAll(); } catch (e) { console.warn(e); } }
     // 3. 資料夾授權把手（Task 8 會存在這裡；現在還沒有也不會出錯）
     await deleteDb("salary-tool-handles");
+    // 4. 加班單頁記住的人事號（2026-09-04 新增的第四個位置）
+    //    用 delta 那邊的函式而不是自己寫一次鍵名字面值 —— 鍵名只該有一個定義處，
+    //    兩邊各寫一次的話，改了其中一邊就會變成「按了清除但沒清掉」。
+    if (typeof otForgetDoctorId === "function") otForgetDoctorId();
     // 記憶體裡那份也要清，否則畫面上還列著已經不記得的資料夾
     folders = [];
     renderFolderList();
