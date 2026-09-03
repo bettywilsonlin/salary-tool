@@ -21397,6 +21397,7 @@ function commissionByMonth(monthlyData) {
             <button onclick="otResetAll()" style="background:white;color:#dc2626;border:1.5px solid #fca5a5;border-radius:6px;padding:7px 14px;font-size:13px;cursor:pointer;font-weight:600;" title="清除所有手動修改，恢復初始計算結果">↩ 還原全部</button>
             <button onclick="otToggleDebug()" style="background:white;color:#2563eb;border:1px solid #bfdbfe;border-radius:6px;padding:7px 12px;font-size:12px;cursor:pointer;" title="顯示／隱藏工具實際讀取的班別原始資料">🔍 原始讀取</button>
             <button onclick="otExportWord()" style="background:#16a34a;color:white;border:none;border-radius:6px;padding:7px 16px;font-size:13px;cursor:pointer;font-weight:600;">📥 下載加班單（Word）</button>
+            
           </div>
         </div>
 
@@ -22672,15 +22673,11 @@ function handleScheduleInput(files) {
   let loaded = 0;
   const total = files.length;
   const newSheets = {};
-  let firstWs = null;
   const skipped = [];
 
   const afterLoad = () => {
     Object.assign(schRawSheets, newSheets);
-    if (firstWs) {
-      const range = XLSX.utils.decode_range(firstWs['!ref']);
-      schDoctors = schParseDoctors(firstWs, range);
-    }
+    schRefreshDoctorsFromLatest();
     const ok = Object.keys(newSheets).length;
     const st = document.getElementById('sch-upload-status');
     let msg = `<span style="color:#15803d;font-weight:600;">✅ 已載入 ${Object.keys(schRawSheets).length} 個月份</span>`;
@@ -22702,7 +22699,6 @@ function handleScheduleInput(files) {
         const ws = wb.Sheets['VS'];
         if (!ws) throw new Error(`${file.name}：找不到 VS 工作表`);
         newSheets[monthKey] = { ws, filename: file.name };
-        if (!firstWs) firstWs = ws;
       } catch(err) {
         skipped.push(file.name);
         console.error(err.message);
@@ -22725,6 +22721,27 @@ function schParseDoctors(ws, range) {
     if (name.length >= 2) list.push({ name, id, col: c });
   }
   return list;
+}
+
+// 取「最新月份」的班表工作表。
+// 為什麼是最新而不是最早：醫師名單就是這張表的第 2、3 列，取最新月份才會讓離職的自動消失、
+// 新進的自動出現、換過人事號的自動換成新號。取最早會讓名單永遠停在第一次上傳的那個月。
+// 月份 key 是 5 碼民國年月（例如 11509），字串排序等於時間排序；檔名無法識別月份時 key 會是
+// 檔名本身，那種 key 先排除，免得它排到最後被誤認成最新的月份。
+function schLatestSheet() {
+  const monthKeys = Object.keys(schRawSheets).filter(k => /^\d{5}$/.test(k));
+  const keys = (monthKeys.length ? monthKeys : Object.keys(schRawSheets)).sort();
+  if (!keys.length) return null;
+  const latestKey = keys[keys.length - 1];
+  return schRawSheets[latestKey] ? schRawSheets[latestKey].ws : null;
+}
+
+// 依最新月份班表重建醫師名單（每次上傳完班表都要呼叫）
+function schRefreshDoctorsFromLatest() {
+  const ws = schLatestSheet();
+  if (!ws) return;
+  const range = XLSX.utils.decode_range(ws['!ref']);
+  schDoctors = schParseDoctors(ws, range);
 }
 
 function schShowDoctorSelector() {
@@ -24025,14 +24042,9 @@ async function handleUnifiedUpload(files, opts = {}) {
     }
   }
 
-  // 更新月班表醫師清單
+  // 更新月班表醫師清單（一律以最新月份的班表為準，見 schLatestSheet 的說明）
   if (schedLoaded.length > 0) {
-    const firstKey = Object.keys(schRawSheets).sort()[0];
-    if (firstKey) {
-      const ws = schRawSheets[firstKey].ws;
-      const range = XLSX.utils.decode_range(ws['!ref']);
-      schDoctors = schParseDoctors(ws, range);
-    }
+    schRefreshDoctorsFromLatest();
     schShowDoctorSelector();
     otInit();
   }
@@ -24596,6 +24608,11 @@ const OT_RULES = {
 };
 
 const OT_SKIP = new Set(['出','課','公','師','會','長','香','香林']);
+
+// 明細預覽表裡「工作事由」下拉的選項。
+// ⚠️ 刻意與新增表單的 #ot-add-reason-select 選項一致（見同檔 HTML 的事由下拉）。
+//    要改選項就是兩處一起改 —— 那是報給醫院的正式薪資紀錄，不可以只改一邊。
+const OT_REASON_OPTIONS = ['處理病人', '補病歷', '收集病人資料', '參加會議', 'R day'];
 let otCurrentMonth = null;
 
 function otFmtTime(hhmm) {
@@ -24667,6 +24684,7 @@ function otSelectDoctor(id) {
   window._otRowsBase       = rows;
   window._otDeleted        = new Set();
   window._otAdds           = [];
+  window._otReasonEdits    = {};   // 換醫師＝整份重算，事由改寫不能沿用上一位的
   window._otMeta           = meta;
   window._otUnknownShifts  = unknownShifts;
   window._otDebugLog       = debugLog;
@@ -24765,7 +24783,12 @@ function otRecalcAndRender() {
   const adds    = window._otAdds     || [];
   const meta = window._otMeta || {};
   const curMonth = meta.month;
-  window._otRows = base.filter((_, i) => !deleted.has(i)).concat(adds)
+  // 事由改寫不直接改 _otRowsBase：base 代表「初始計算結果」，
+  // 「↩ 還原全部」要能真的還原回去，所以改寫另存在 _otReasonEdits，到這裡才套上。
+  // map 是 1:1，所以後面 filter 的 index 仍然對得上 base 的 index。
+  const edits = window._otReasonEdits || (window._otReasonEdits = {});
+  window._otRows = base.map((r, i) => (i in edits ? { ...r, reason: edits[i] } : r))
+    .filter((_, i) => !deleted.has(i)).concat(adds)
     .filter(r => !curMonth || parseInt((r.date||'').split('/')[0], 10) === curMonth);
   let wd = 0, hd = 0;
   window._otRows.forEach(r => { wd += r.weekdayHours||0; hd += r.holidayHours||0; });
@@ -24804,27 +24827,33 @@ function otRenderPreview() {
   const curMonth = meta.month;
   const inMonth = row => !curMonth || parseInt((row.date||'').split('/')[0], 10) === curMonth;
 
+  const reasonEdits = window._otReasonEdits || {};
   const allRows = [];
   base.forEach((row, baseIdx) => {
-    if (!deleted.has(baseIdx) && inMonth(row)) allRows.push({ source: 'base', idx: baseIdx, row });
+    // 顯示用的事由要跟 _otRows 一致：base 列若被改過事由，這裡也要顯示改後的值
+    if (!deleted.has(baseIdx) && inMonth(row)) allRows.push({ source: 'base', idx: baseIdx, row,
+      reason: (baseIdx in reasonEdits) ? reasonEdits[baseIdx] : row.reason });
   });
   adds.forEach((row, addIdx) => {
-    if (inMonth(row)) allRows.push({ source: 'add', idx: addIdx, row });
+    if (inMonth(row)) allRows.push({ source: 'add', idx: addIdx, row, reason: row.reason });
   });
   allRows.sort((a, b) => {
     const dd = parseDate(a.row.date) - parseDate(b.row.date);
     return dd !== 0 ? dd : parseTime(a.row.timeStr) - parseTime(b.row.timeStr);
   });
 
-  allRows.forEach(({ source, idx, row }) => {
+  allRows.forEach(({ source, idx, row, reason }) => {
     const tr = document.createElement('tr');
     if (source === 'add') tr.style.background = '#f0fdf4';
-    [row.date, row.timeStr, row.weekdayHours||'', row.holidayHours||'', row.reason].forEach((val, i) => {
+    [row.date, row.timeStr, row.weekdayHours||'', row.holidayHours||''].forEach((val, i) => {
       const td = document.createElement('td');
       td.textContent = String(val);
       if ((i === 2 && !row.isHoliday && val) || (i === 3 && row.isHoliday && val)) td.className = 'ot-hd';
       tr.appendChild(td);
     });
+    // 工作事由改成下拉：自動算出來的列本來寫死「處理病人」，只有手動新增的能選。
+    // 但登錄到醫院系統時事由是要逐筆對的，寫死等於得在醫院網頁上一筆一筆改回來。
+    tr.appendChild(otReasonCell(source, idx, reason));
     const tdDel = document.createElement('td');
     const btn = document.createElement('button');
     btn.textContent = '✕';
@@ -24880,8 +24909,48 @@ function otDeleteAdd(idx) {
 
 function otResetAll() {
   if (!confirm('確定要清除所有手動修改，恢復初始計算結果嗎？')) return;
-  window._otDeleted = new Set();
-  window._otAdds    = [];
+  window._otDeleted     = new Set();
+  window._otAdds        = [];
+  window._otReasonEdits = {};   // 事由改寫也算「手動修改」，一起還原
+  otRecalcAndRender();
+}
+
+// 明細預覽表的「工作事由」格：一顆下拉，每一列都能改（含自動算出來的列）。
+function otReasonCell(source, idx, reason) {
+  const td  = document.createElement('td');
+  const sel = document.createElement('select');
+  sel.style.cssText = 'font-size:12px;padding:2px 4px;border:1px solid #d1d5db;border-radius:4px;background:white;max-width:140px;';
+  const opts = OT_REASON_OPTIONS.slice();
+  // 現值不在清單裡（例如以前手動填過「其他」的自由文字）也要看得到，不然一渲染就被吃掉
+  if (reason && opts.indexOf(reason) < 0) opts.unshift(reason);
+  opts.forEach(o => {
+    const op = document.createElement('option');
+    op.value = o; op.textContent = o;
+    sel.appendChild(op);
+  });
+  const other = document.createElement('option');
+  other.value = '__other__'; other.textContent = '其他…';
+  sel.appendChild(other);
+  sel.value = reason || OT_REASON_OPTIONS[0];
+  sel.onchange = () => {
+    let v = sel.value;
+    if (v === '__other__') {
+      v = (prompt('請輸入工作事由（醫院加班登錄頁限 10 個中文字）', reason || '') || '').trim();
+      if (!v) { sel.value = reason || OT_REASON_OPTIONS[0]; return; }   // 按取消就維持原值
+    }
+    otSetReason(source, idx, v);
+  };
+  td.appendChild(sel);
+  return td;
+}
+
+function otSetReason(source, idx, reason) {
+  if (source === 'base') {
+    (window._otReasonEdits || (window._otReasonEdits = {}))[idx] = reason;
+  } else {
+    const row = (window._otAdds || [])[idx];
+    if (row) row.reason = reason;
+  }
   otRecalcAndRender();
 }
 
@@ -25100,6 +25169,8 @@ async function otExportWord() {
   a.click();
   URL.revokeObjectURL(a.href);
 }
+
+
 
 // ==================== 初始化 ====================
 initShiftOptions();
