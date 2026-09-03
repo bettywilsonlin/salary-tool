@@ -21224,22 +21224,20 @@ function commissionByMonth(monthlyData) {
   <!-- ===== Tab 3: 月班表計算 ===== -->
   <div id="tab-schedule" class="panel">
 
-    <!-- 選擇醫師 -->
+    <!-- 醫師人事號（手動輸入，2026-09-04 取代原本的下拉選單＋⚙ 管理名單釘選機制）
+         換掉的原因：原本的下拉靠一個「釘選集合」過濾，而空的 Set 在判斷式裡算 true，
+         所以「沒釘選任何人」會被當成「釘選了零個人」→ 選單一個選項都沒有，
+         每次都得先開管理名單勾人。改成直接打自己的人事號，跟加班單頁一致。
+         （這段刻意不寫出舊變數的名字，好讓「舊名字是否清乾淨」的 grep 檢查不會被自己這行說明命中） -->
     <div class="card" id="sch-doctor-card" style="display:none;margin-bottom:16px;">
-      <div class="card-title">選擇要計算的醫師</div>
+      <div class="card-title">輸入人事號</div>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:0;">
-        <select id="sch-doctor-sel" style="max-width:300px;font-size:16px;padding:8px 12px;" onchange="schOnDoctorChange(this.value)"></select>
-        <button onclick="schToggleManage()" style="font-size:12px;color:var(--gray-600);background:white;border:1px solid var(--gray-200);border-radius:6px;padding:5px 10px;cursor:pointer;">⚙ 管理名單</button>
+        <input id="sch-doctor-input" type="text" placeholder="你的人事號" autocomplete="off"
+               style="max-width:220px;font-size:15px;padding:8px 12px;border:1.5px solid var(--gray-200);border-radius:8px;background:white;"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();schApplyDoctorInput(false);}">
+        <button onclick="schApplyDoctorInput(false)" style="font-size:14px;font-weight:600;padding:8px 18px;border:none;border-radius:8px;cursor:pointer;background:var(--primary);color:white;">帶出車馬費</button>
       </div>
-      <div id="sch-manage-panel" style="display:none;margin-top:12px;padding:12px;background:#f9fafb;border-radius:8px;border:1px solid var(--gray-200);">
-        <div style="font-size:12px;font-weight:600;color:#374151;margin-bottom:8px;">勾選要在選單中顯示的醫師：</div>
-        <div id="sch-manage-checkboxes" style="display:flex;flex-wrap:wrap;gap:6px;max-height:180px;overflow-y:auto;"></div>
-        <div style="margin-top:10px;display:flex;gap:8px;">
-          <button onclick="schSelectAll(true)" style="font-size:11px;padding:3px 8px;border:1px solid #d1d5db;border-radius:4px;cursor:pointer;background:white;">全選</button>
-          <button onclick="schSelectAll(false)" style="font-size:11px;padding:3px 8px;border:1px solid #d1d5db;border-radius:4px;cursor:pointer;background:white;">全不選</button>
-          <button onclick="document.getElementById('sch-manage-panel').style.display='none'" style="font-size:11px;padding:3px 8px;border:1px solid #d1d5db;border-radius:4px;cursor:pointer;background:white;">關閉</button>
-        </div>
-      </div>
+      <div id="sch-doctor-msg" style="display:none;margin-top:10px;font-size:13px;line-height:1.6;"></div>
     </div>
 
     <!-- 結果區 -->
@@ -22595,7 +22593,6 @@ const SHIFT_GROUPS = {
   '佳里': ['佳D','佳E','佳A','佳P',"佳a'",'佳Q','佳B'],
 };
 let schMonthLabels = {};
-let schPinnedDoctors = new Set();
 function otToggleDebug() {
   const p = document.getElementById('ot-debug-panel');
   p.style.display = p.style.display === 'none' ? 'block' : 'none';
@@ -22780,69 +22777,61 @@ function schRefreshDoctorsFromLatest() {
   schDoctors = schParseDoctors(ws, range);
 }
 
+// 上傳完班表後把「輸入人事號」那張卡片打開。
+// 如果之前記過人事號（跟加班單頁共用同一個鍵），直接填回去並靜默套用一次，
+// 這樣使用者上傳完班表就看得到自己的車馬費，不必再打一次。
 function schShowDoctorSelector() {
   const card = document.getElementById('sch-doctor-card');
   card.style.display = 'block';
-  schRefreshDoctorSelect();
-}
-
-function schRefreshDoctorSelect() {
-  const sel = document.getElementById('sch-doctor-sel');
-  if (!sel) return;
-  const current = sel.value;
-  sel.innerHTML = '<option value="">── 請選擇醫師 ──</option>';
-  const filtered = schPinnedDoctors
-    ? schDoctors.filter(d => schPinnedDoctors.has(d.id))
-    : schDoctors;
-  for (const d of filtered) {
-    const opt = document.createElement('option');
-    opt.value = d.id;
-    opt.textContent = `${d.name}（${d.id}）`;
-    sel.appendChild(opt);
+  const box = document.getElementById('sch-doctor-input');
+  if (box && !box.value) {
+    const remembered = otLoadRememberedDoctorId();
+    if (remembered) box.value = remembered;
   }
-  if (current && [...sel.options].some(o => o.value === current)) {
-    sel.value = current;
-    schOnDoctorChange(current);
+  if (box && box.value) schApplyDoctorInput(true);
+}
+
+// 訊息一律用 textContent：人事號是使用者現打的字，不能交給瀏覽器當標記解析。
+// 跟加班單頁的 otSetDoctorMsg 是同一個做法，但寫在自己的訊息元素上，
+// 兩頁的提示才不會互相蓋掉。
+function schSetDoctorMsg(text, ok) {
+  const el = document.getElementById('sch-doctor-msg');
+  if (!el) return;
+  el.textContent = text || '';
+  el.style.display = text ? 'block' : 'none';
+  el.style.color = ok ? '#15803d' : '#b91c1c';
+}
+
+// 按【帶出車馬費】或在輸入框按 Enter 的入口。
+// silent=true 是上傳完班表自動帶入的情況：使用者沒有按任何東西，
+// 這時「請輸入人事號」那句紅字會變成無緣無故冒出來，所以壓掉。
+function schApplyDoctorInput(silent) {
+  const box = document.getElementById('sch-doctor-input');
+  const raw = box ? box.value : '';
+  // otResolveDoctorId 回傳的是「班表原本那個字串」，不是使用者打的字。
+  // 下游 schParseMonth 要拿它去逐格比對班表，大小寫或空白差一點就找不到，
+  // 而且不會丟例外，只會安靜地算出零元。
+  const id = otResolveDoctorId(raw, schDoctors);
+
+  if (!id) {
+    document.getElementById('sch-result').style.display = 'none';
+    if (!String(raw == null ? '' : raw).trim()) {
+      schSetDoctorMsg(silent ? '' : '請先輸入你的人事號。', false);
+      return;
+    }
+    // 找不到人一定要講話。靜靜什麼都不做，使用者會以為自己這個月沒班。
+    const total = (schDoctors || []).length;
+    schSetDoctorMsg(
+      `班表裡沒有「${String(raw).trim()}」這個人事號。這張班表共有 ${total} 個人事號`
+      + `（取自最新月份），請對照班表 VS 工作表的人事號那一列。`,
+      false
+    );
+    return;
   }
-}
 
-function schToggleManage() {
-  const p = document.getElementById('sch-manage-panel');
-  if (p.style.display === 'none') {
-    schRenderManageCheckboxes();
-    p.style.display = 'block';
-  } else {
-    p.style.display = 'none';
-  }
-}
-
-function schRenderManageCheckboxes() {
-  const container = document.getElementById('sch-manage-checkboxes');
-  container.innerHTML = '';
-  for (const d of schDoctors) {
-    const checked = !schPinnedDoctors || schPinnedDoctors.has(d.id);
-    const label = document.createElement('label');
-    label.style.cssText = 'display:flex;align-items:center;gap:5px;font-size:12px;padding:4px 8px;background:white;border:1px solid #e5e7eb;border-radius:4px;cursor:pointer;white-space:nowrap;';
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.value = d.id;
-    cb.checked = checked;
-    cb.addEventListener('change', schUpdatePinned);
-    label.appendChild(cb);
-    label.appendChild(document.createTextNode(d.name));
-    container.appendChild(label);
-  }
-}
-
-function schUpdatePinned() {
-  const checkboxes = document.querySelectorAll('#sch-manage-checkboxes input[type="checkbox"]');
-  schPinnedDoctors = new Set([...checkboxes].filter(cb => cb.checked).map(cb => cb.value));
-  schRefreshDoctorSelect();
-}
-
-function schSelectAll(checked) {
-  document.querySelectorAll('#sch-manage-checkboxes input[type="checkbox"]').forEach(cb => { cb.checked = checked; });
-  schUpdatePinned();
+  schSetDoctorMsg('', true);
+  otRememberDoctorId(id);   // 記憶要不要真的寫下去，由 otConsentOn() 決定
+  schOnDoctorChange(id);
 }
 
 function schOnDoctorChange(id) {
@@ -23089,7 +23078,7 @@ function fmtNT(n) {
 function renderTotalBanner() {
   const banner = document.getElementById('total-me-banner');
   if (!schSelectedId) {
-    banner.textContent = '尚未選擇醫師（請先到「用班表計算車馬費」頁選擇你自己）';
+    banner.textContent = '尚未指定醫師（請先到「用班表計算車馬費」頁輸入你的人事號）';
     return;
   }
   const doc = (Array.isArray(schDoctors) ? schDoctors : []).find(d => d.id === schSelectedId);
@@ -23337,7 +23326,7 @@ function refreshTotalTab() {
   if (!schSelectedId) {
     emptyBox.style.display = '';
     mainBox.style.display = 'none';
-    emptyMsg.textContent = '請先到「用班表計算車馬費」頁選擇你自己';
+    emptyMsg.textContent = '請先到「用班表計算車馬費」頁輸入你的人事號';
     return;
   }
   if (hasSch && !(Array.isArray(schDoctors) && schDoctors.find(d => d.id === schSelectedId))) {
@@ -25025,7 +25014,7 @@ function otConfirmAdd() {
     ? (document.getElementById('ot-add-reason-other').value.trim() || '其他')
     : sel;
 
-  if (!month || !day)   { alert('請先選擇醫師以載入月份資料'); return; }
+  if (!month || !day)   { alert('請先輸入人事號以載入月份資料'); return; }
   if (!time)            { alert('請填入加班起迄時間'); return; }
   if (!hours || hours <= 0) { alert('請選擇正確的時數'); return; }
 
