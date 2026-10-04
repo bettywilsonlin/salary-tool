@@ -304,7 +304,7 @@ window.__pdfWorkerUrl = function () {
 </script>
 <script>/* 薪資條解析模組（來源 薪水/src/） */
 // 薪資條欄位定義。每個欄位一條 regex，抓出來的第 1 群組交給 cleanNum() 轉數字。
-// 逐字移植自 parse_salary.py:100-128（2026-09-02 移植，已用程式逐條比對過位元組相同）。
+// 逐字移植自 parse_salary.py:100-130（2026-09-02 移植，已用程式逐條比對過位元組相同）。
 //
 // 為什麼數字用 [\d,\s] 這種寬鬆字元類：PDF 抽字會把「573,121」拆成「5 73,121」，
 // 千位處插進空白，所以先寬鬆抓進來，再由 cleanNum() 把空白和逗號去掉。
@@ -327,6 +327,8 @@ const PDF_FIELDS = {
   "支援外院":     /支援外院\(郭綜合、旗山\)\s+([\d,\-–—]+)/m,
   // 新格式（114.08 後）
   "深耕津貼":     /車馬費辛勞津貼.*?([\d,\s\-–—]+?)\s+辛勞津貼臨床總時數/m,
+  // 深耕津貼的計算基礎。不等於臨床＋觀區（還含部分 δ／S 班時數），所以要直接抓，不能自己加
+  "辛勞津貼總時數": /辛勞津貼臨床總時數\s+(\d+)/m,
   "包夜班津貼":   /包夜班津貼\s+([\d,\s\-–—]+?)(?:\s|$)/m,
   // 壅塞津貼有三種寫法，金額可能有內部空白「8 00」。
   // 用 [ \t] 而不是 \s，避免吃進換行把下一行的數字也抓進來。
@@ -1130,7 +1132,7 @@ function commissionByMonth(monthlyData) {
       <div class="card" id="bonus-card" style="margin-bottom:16px;display:none;">
         <div class="card-title">💰 津貼明細（深耕 + 壅塞）</div>
         <div style="font-size:12px;color:var(--gray-600);margin-bottom:14px;line-height:1.6;">
-          深耕（辛勞津貼）：總時數＝臨床時數＋觀區時數。150–180h 每小時 +500，超過 180h 每小時 +800。<br>
+          深耕（辛勞津貼）：先用班表加總時數試算，再跟薪資條的「辛勞津貼臨床總時數」與金額對帳。150–180h 每小時 +500，超過 180h 每小時 +800。<br>
           壅塞津貼：每班遇到當天啟動壅塞 +800（壅塞啟動屬院方事後資訊，由薪資條反推）。
         </div>
         <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start;">
@@ -3155,6 +3157,22 @@ function _bonusRow(label, value, opts) {
   return div;
 }
 
+// 深耕公式。班表試算和「薪資條時數套公式」兩處共用，免得兩邊公式改一邊漏一邊
+function _deepFarmFee(hours) {
+  const tier1 = hours > 150 ? (Math.min(hours, 180) - 150) * 500 : 0;
+  const tier2 = hours > 180 ? (hours - 180) * 800 : 0;
+  return { tier1, tier2, sum: tier1 + tier2 };
+}
+
+// 對帳的一行：ok=true 綠勾、false 紅叉、null 灰色（無法對帳）
+function _reconLine(ok, text) {
+  const div = document.createElement('div');
+  div.style.color = ok === true ? '#15803d' : ok === false ? '#b91c1c' : 'var(--gray-600)';
+  if (ok === false) div.style.fontWeight = '700';
+  div.textContent = (ok === true ? '✅ ' : ok === false ? '❌ ' : 'ℹ️ ') + text;
+  return div;
+}
+
 function schRenderBonus(monthKey, shifts) {
   const card     = document.getElementById('bonus-card');
   const pending  = document.getElementById('bonus-pending-card');
@@ -3208,58 +3226,50 @@ function schRenderBonus(monthKey, shifts) {
   card.style.display = 'block';
   pending.style.display = 'none';
 
-  const clinical = slip.臨床時數 ?? 0;
-  const obs      = slip.觀區時數 ?? 0;
-  const total    = clinical + obs;
   const congestFee = slip.壅塞津貼 ?? 0;
   const congestCount = Math.round(congestFee / 800);
 
-  // 深耕
-  let tier1 = 0, tier2 = 0;
-  if (total > 150) tier1 = (Math.min(total, 180) - 150) * 500;
-  if (total > 180) tier2 = (total - 180) * 800;
-  const dfSum = tier1 + tier2;
-
+  // 深耕：先用「班表」自己算（獨立來源），再拿薪資條來驗，不反過來。
+  // 2026-10-05 以前是拿薪資條的臨床＋觀區時數來算，等於用薪資條驗薪資條，
+  // 而且漏了薪資條算進去的 δ／S 班時數，有 δ／S 班的月份一定算少。
   const dfEl = document.getElementById('bonus-deepfarm-output');
   while (dfEl.firstChild) dfEl.removeChild(dfEl.firstChild);
-  dfEl.appendChild(_bonusRow(`總時數：`, `${total} h（臨床 ${clinical} + 觀區 ${obs}）— 薪資條`));
 
-  // 班表初估 vs 薪資條 對帳
-  if (estTotal > 0) {
-    const gap = estTotal - total;
-    const reconRow = document.createElement('div');
-    reconRow.style.cssText = 'font-size:12px;color:var(--gray-600);margin-top:2px;';
-    reconRow.textContent = `班表初估：${estTotal} h（臨床 ${est.clinical} + 觀區 ${est.obs}）`;
-    dfEl.appendChild(reconRow);
-    if (Math.abs(gap) > 5) {
-      const warn = document.createElement('div');
-      warn.style.cssText = 'margin-top:4px;padding:4px 10px;background:#fff;border:1px dashed #b45309;border-radius:6px;font-size:12px;color:#92400e;';
-      warn.textContent = `⚠️ 班表加總與薪資條差 ${gap>0?'+':''}${gap} h（>5h，請檢查班別代碼或時數對照表）`;
-      dfEl.appendChild(warn);
-    }
-    if (est.unknown.length) {
-      const u = document.createElement('div');
-      u.style.cssText = 'margin-top:4px;font-size:11px;color:#b45309;';
-      u.textContent = `（未知班別未列入：${[...new Set(est.unknown)].join('、')}）`;
-      dfEl.appendChild(u);
-    }
+  const estFee = _deepFarmFee(estTotal);
+  dfEl.appendChild(_bonusRow(`班表總時數：`, `${estTotal} h（臨床 ${est.clinical} + 觀區 ${est.obs}）`));
+  if (est.unknown.length) {
+    const u = document.createElement('div');
+    u.style.cssText = 'margin-top:2px;font-size:11px;color:#b45309;';
+    u.textContent = `（未知班別未列入：${[...new Set(est.unknown)].join('、')}）`;
+    dfEl.appendChild(u);
   }
+  dfEl.appendChild(_bonusRow(`150–180h 段：(${Math.min(Math.max(estTotal,150),180)} − 150) × 500 = `, `$${estFee.tier1.toLocaleString()}`));
+  dfEl.appendChild(_bonusRow(estTotal > 180 ? `180h 以上：(${estTotal} − 180) × 800 = ` : `180h 以上：`, `$${estFee.tier2.toLocaleString()}`));
+  dfEl.appendChild(_bonusRow(`班表試算合計：`, `$${estFee.sum.toLocaleString()}`, {bold:true, size:'16px', color:'#15803d', mt:'6px'}));
 
-  dfEl.appendChild(_bonusRow(`150–180h 段：(${Math.min(total,180)} − 150) × 500 = `, `$${tier1.toLocaleString()}`));
-  if (total > 180) {
-    dfEl.appendChild(_bonusRow(`180h 以上：(${total} − 180) × 800 = `, `$${tier2.toLocaleString()}`));
+  // 對帳區：兩道對帳分開顯示，才分得出是「時數」錯還是「金額」錯
+  const slipHours = slip.辛勞津貼總時數 ?? 0;
+  const slipDF    = slip.深耕津貼 ?? 0;
+  const recon = document.createElement('div');
+  recon.style.cssText = 'margin-top:10px;padding-top:8px;border-top:1px dashed #86efac;font-size:12px;line-height:1.7;';
+  dfEl.appendChild(recon);
+
+  // 薪資條沒有這格（114.11 以前沒有深耕項目，或 SALARY_DATA 是還沒重跑 parse_salary.py 的舊資料）
+  if (!slipHours) {
+    recon.appendChild(_reconLine(null, `薪資條沒有「辛勞津貼臨床總時數」，無法對帳（深耕金額 $${slipDF.toLocaleString()}）`));
   } else {
-    dfEl.appendChild(_bonusRow(`180h 以上：`, `$0`));
-  }
-  dfEl.appendChild(_bonusRow(`合計：`, `$${dfSum.toLocaleString()}`, {bold:true, size:'16px', color:'#15803d', mt:'6px'}));
-
-  // 對帳：跟薪資條金額對不上時警示
-  const slipDF = slip.深耕津貼 ?? null;
-  if (slipDF != null && slipDF !== dfSum) {
-    const warn = document.createElement('div');
-    warn.style.cssText = 'margin-top:6px;padding:6px 10px;background:#fff;border:1px dashed #b91c1c;border-radius:6px;font-size:12px;color:#7f1d1d;';
-    warn.textContent = `⚠️ 與薪資條金額 $${slipDF.toLocaleString()} 差 $${(slipDF-dfSum).toLocaleString()}（請對帳）`;
-    dfEl.appendChild(warn);
+    // 對帳 A：班表時數 vs 薪資條時數。任何差距都顯示——差 1 小時就是 500 或 800 元
+    const hourGap = estTotal - slipHours;
+    recon.appendChild(_reconLine(hourGap === 0,
+      hourGap === 0
+        ? `A. 時數：班表 ${estTotal} h ＝ 薪資條 ${slipHours} h`
+        : `A. 時數：班表 ${estTotal} h vs 薪資條 ${slipHours} h，差 ${hourGap>0?'+':''}${hourGap} h（檢查班別時數對照表，或問薪資處 δ／S 班怎麼算）`));
+    // 對帳 B：薪資條自己的時數套公式 vs 薪資條金額（驗薪資處的算術）
+    const slipFee = _deepFarmFee(slipHours).sum;
+    recon.appendChild(_reconLine(slipFee === slipDF,
+      slipFee === slipDF
+        ? `B. 金額：薪資條 ${slipHours} h 套公式 $${slipFee.toLocaleString()} ＝ 實發 $${slipDF.toLocaleString()}`
+        : `B. 金額：薪資條 ${slipHours} h 套公式應為 $${slipFee.toLocaleString()}，實發 $${slipDF.toLocaleString()}，差 $${(slipDF-slipFee).toLocaleString()}`));
   }
 
   // 壅塞
