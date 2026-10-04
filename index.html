@@ -355,6 +355,15 @@ function cleanNum(s) {
   return Number.isNaN(n) ? 0 : n;   // 認不得就當 0，跟 Python 版一致
 }
 
+// 這筆資料是不是用舊版解析程式產生的（2026-10-05 以前）。
+// 為什麼要有：公開版「記住」與「備份檔」存的是解析後的數字，不是 PDF。
+// 解析程式多抓一格之後，舊資料少那一格，畫面會誤說「薪資條沒有這一格」。
+// 判斷看「欄位存不存在」，不看值：舊制月份重新解析後這格是 0，那是正確的新資料。
+// 以後 PDF_FIELDS 再加欄位，把那個欄位名換到這裡即可。
+function isOutdatedRow(row) {
+  return !("辛勞津貼總時數" in row);
+}
+
 // 解析一張薪資條的文字，回傳各欄位的數字。
 // monthKey 由呼叫端從檔名解出（例 "114.06"），本函式不碰檔名。
 function parsePayslip(text, monthKey) {
@@ -4290,7 +4299,7 @@ renderCATable();
 
   // 先確認依賴都在。少了任何一個就大聲講，不要讓使用者按了按鈕沒反應。
   const 缺少 = ["parsePayslip", "extractTextFromPdf", "monthKeyFromFilename", "warningSummary",
-                "classifyUploadFile"]
+                "classifyUploadFile", "isOutdatedRow"]
     .filter(n => typeof window[n] !== "function");
   if (缺少.length) {
     console.error("[公開版] 缺少解析模組：" + 缺少.join("、") + "（build-public.mjs 的注入可能壞了）");
@@ -4565,6 +4574,29 @@ renderCATable();
     }
   }
 
+  // 從這台電腦刪掉指定月份。用在「記住的資料是舊格式」時：留著的話每次開都會再載入、再誤導一次
+  async function removePayslips(months) {
+    const db = await payDbOpen();
+    try {
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(PAY_STORE, "readwrite");
+        const store = tx.objectStore(PAY_STORE);
+        for (const m of months) store.delete(m);
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error);
+      });
+    } finally {
+      db.close();   // 同上，不關會讓清除鈕失效
+    }
+  }
+
+  // 舊格式的月份要請使用者重新拖 PDF。有加資料夾的不用拖：清掉之後按資料夾，
+  // scanFolder 只跳過「畫面上已有的月份」，被清掉的那幾個月就會重讀
+  function outdatedMessage(count, where) {
+    return `${where}有 ${count} 個月是舊格式（2026-10-05 解析方式更新前存的），已經清掉。` +
+      `請把那幾個月的薪資條 PDF 重新拖進來；有加資料夾的，按一下資料夾就會重讀。`;
+  }
+
   async function loadPayslips() {
     if (!readConsent(window.localStorage)) return [];
     const db = await payDbOpen();
@@ -4670,7 +4702,16 @@ renderCATable();
   document.addEventListener("payslip-files-handled", () => { savePayslips(currentRows()); });
 
   // 開啟時載入（沒勾就是空的，loadPayslips 自己會擋）
-  loadPayslips().then(rows => { if (rows.length) addRows(rows); }).catch(e => console.warn(e));
+  // 舊格式（缺 10/5 新增欄位）的月份不載入，並從這台電腦刪掉，否則津貼卡片會誤說薪資條沒有那一格
+  loadPayslips().then(async rows => {
+    const fresh = rows.filter(r => !isOutdatedRow(r));
+    const outdated = rows.filter(r => isOutdatedRow(r)).map(r => r.月份);
+    if (fresh.length) addRows(fresh);
+    if (outdated.length) {
+      await removePayslips(outdated);
+      setStatus(outdatedMessage(outdated.length, "這台電腦記住的資料"), "warn");
+    }
+  }).catch(e => console.warn(e));
 
   // ---- 資料夾清單（規格 D4、§4.3、§4.4；2026-09-02 由單一資料夾擴成清單）----
   //
@@ -4921,11 +4962,21 @@ renderCATable();
       importInput.value = "";
       if (!f) return;
       try {
-        const rows = readBackup(await f.text());
-        if (!rows.length) { setStatus("這個備份檔裡沒有資料。", "warn"); return; }
-        addRows(rows);
-        await savePayslips(currentRows());
-        setStatus(`已匯入 ${rows.length} 個月的資料。`, "ok");
+        const all = readBackup(await f.text());
+        if (!all.length) { setStatus("這個備份檔裡沒有資料。", "warn"); return; }
+        // 10/5 以前匯出的備份少一格，跟「記住」的舊資料一樣不匯入
+        const rows = all.filter(r => !isOutdatedRow(r));
+        const outdatedCount = all.length - rows.length;
+        if (rows.length) {
+          addRows(rows);
+          await savePayslips(currentRows());
+        }
+        if (outdatedCount) {
+          const imported = rows.length ? `已匯入 ${rows.length} 個月。` : "";
+          setStatus(imported + outdatedMessage(outdatedCount, "備份檔裡").replace("已經清掉", "沒有匯入"), "warn");
+        } else {
+          setStatus(`已匯入 ${rows.length} 個月的資料。`, "ok");
+        }
       } catch (e) {
         // readBackup 的錯誤訊息本來就是寫給使用者看的，直接顯示
         setStatus(e && e.message ? e.message : "匯入失敗", "bad");
