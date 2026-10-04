@@ -359,9 +359,10 @@ function cleanNum(s) {
 // 為什麼要有：公開版「記住」與「備份檔」存的是解析後的數字，不是 PDF。
 // 解析程式多抓一格之後，舊資料少那一格，畫面會誤說「薪資條沒有這一格」。
 // 判斷看「欄位存不存在」，不看值：舊制月份重新解析後這格是 0，那是正確的新資料。
-// 以後 PDF_FIELDS 再加欄位，把那個欄位名換到這裡即可。
+// 比對整份 PDF_FIELDS 而不是寫死某一格：parsePayslip 每個欄位都一定會給值（抓不到給 0），
+// 所以缺任何一個＝用舊版程式解析的。以後再加欄位會自動生效，不用記得回來改這裡。
 function isOutdatedRow(row) {
-  return !("辛勞津貼總時數" in row);
+  return Object.keys(PDF_FIELDS).some(key => !(key in row));
 }
 
 // 解析一張薪資條的文字，回傳各欄位的數字。
